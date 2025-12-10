@@ -8,4 +8,8 @@ int main() {
 
   // TODO: Uncomment the code below to pass the first stage
    std::cout << "$ ";
+   std::string buff;
+   std::cin >> buff;
+   std::cout << buff << std::endl;
+
 }
