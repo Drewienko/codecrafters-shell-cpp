@@ -10,6 +10,6 @@ int main() {
    std::cout << "$ ";
    std::string buff;
    std::cin >> buff;
-   std::cout << buff << std::endl;
+   std::cerr << buff << ": command not found" << std::endl;
 
 }
