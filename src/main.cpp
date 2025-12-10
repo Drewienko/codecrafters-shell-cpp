@@ -12,6 +12,8 @@ int main()
   {
     std::cout << "$ ";
     std::cin >> buff;
+    if (buff == "exit")
+      break;
     std::cerr << buff << ": command not found" << std::endl;
   }
 }
