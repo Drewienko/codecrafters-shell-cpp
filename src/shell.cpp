@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <system_error>
 #include <utility>
 
 Shell::Shell()
@@ -69,10 +70,65 @@ int Shell::runType(const std::vector<std::string> &args) const
       continue;
     }
 
+    if (auto path = findExecutable(name))
+    {
+      std::cout << name << " is " << *path << std::endl;
+      continue;
+    }
+
     std::cout << name << ": not found" << std::endl;
   }
 
   return 0;
+}
+
+std::optional<std::string> Shell::findExecutable(const std::string &name) const
+{
+  const char *pathEnv = std::getenv("PATH");
+  if (!pathEnv || name.empty())
+    return std::nullopt;
+
+  const std::string pathValue(pathEnv);
+  std::string segment;
+
+  auto checkSegment = [&](const std::string &dir) -> std::optional<std::string>
+  {
+    if (dir.empty())
+      return std::nullopt;
+    const std::filesystem::path candidate = std::filesystem::path(dir) / name;
+    if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
+      return candidate.string();
+    return std::nullopt;
+  };
+
+  for (char c : pathValue)
+  {
+    if (c == ':' || c == ';')
+    {
+      if (auto found = checkSegment(segment))
+        return found;
+      segment.clear();
+      continue;
+    }
+    segment.push_back(c);
+  }
+
+  if (auto found = checkSegment(segment))
+    return found;
+
+  return std::nullopt;
+}
+
+bool Shell::isExecutable(const std::filesystem::path &path) const
+{
+  std::error_code ec;
+  const auto perms = std::filesystem::status(path, ec).permissions();
+  if (ec)
+    return false;
+
+  using std::filesystem::perms;
+  const auto mask = perms::owner_exec | perms::group_exec | perms::others_exec;
+  return (perms::none != (perms & mask));
 }
 
 void Shell::run()

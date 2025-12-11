@@ -1,6 +1,8 @@
 #pragma once
 
+#include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,4 +22,6 @@ private:
   std::vector<std::string> tokenize(const std::string &line) const;
   int runCommand(const std::vector<std::string> &parts);
   int runType(const std::vector<std::string> &args) const;
+  std::optional<std::string> findExecutable(const std::string &name) const;
+  bool isExecutable(const std::filesystem::path &path) const;
 };
