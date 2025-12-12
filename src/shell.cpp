@@ -1,6 +1,8 @@
 #include "shell.hpp"
 
 #include <cstdlib>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <iostream>
 #include <sstream>
 #include <system_error>
@@ -51,8 +53,51 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   if (cmd != commands.end())
     return cmd->second(parts);
 
+  if (auto path = findExecutable(parts[0]))
+  {
+    std::string execPath = *path + '/' + parts[0];
+    return externalCommand(*path, parts);
+  }
+
   std::cerr << parts[0] << ": command not found" << std::endl;
   return 127;
+}
+
+std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
+{
+  std::vector<char *> argv;
+  argv.reserve(parts.size() + 1);
+  for (auto &s : parts)
+    argv.push_back(const_cast<char *>(s.c_str()));
+  argv.push_back(nullptr);
+
+  return argv;
+}
+
+int Shell::externalCommand(const std::string &path, const std::vector<std::string> &parts)
+{
+
+  pid_t pid = fork();
+  if (pid == 0)
+  {
+    std::vector<char *> argv = argvHelper(parts);
+
+    extern char **environ;
+    execve(path.c_str(), argv.data(), environ);
+    perror("execve");
+    _exit(127);
+  }
+  else if (pid > 0)
+  {
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 127;
+  }
+  else
+  {
+    perror("fork");
+    return 127;
+  }
 }
 
 int Shell::runType(const std::vector<std::string> &args) const

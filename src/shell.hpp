@@ -24,4 +24,6 @@ private:
   int runType(const std::vector<std::string> &args) const;
   std::optional<std::string> findExecutable(const std::string &name) const;
   bool isExecutable(const std::filesystem::path &path) const;
+  std::vector<char *> argvHelper(const std::vector<std::string> &parts);
+  int externalCommand(const std::string &path, const std::vector<std::string> &parts);
 };
