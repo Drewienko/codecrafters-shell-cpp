@@ -10,8 +10,12 @@
 class Shell
 {
 public:
-  Shell();
+  Shell(int argc, char *argv[], char **envp);
   void run();
+  std::vector<std::string> argv, envp;
+
+  ~Shell() = default;
+  Shell &operator=(const Shell &&other) = delete;
 
 private:
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
@@ -22,6 +26,7 @@ private:
   std::vector<std::string> tokenize(const std::string &line) const;
   int runCommand(const std::vector<std::string> &parts);
   int runType(const std::vector<std::string> &args) const;
+  int runPwd();
   std::optional<std::string> findExecutable(const std::string &name) const;
   bool isExecutable(const std::filesystem::path &path) const;
   std::vector<char *> argvHelper(const std::vector<std::string> &parts);

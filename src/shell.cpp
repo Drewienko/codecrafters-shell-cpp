@@ -8,8 +8,15 @@
 #include <system_error>
 #include <utility>
 
-Shell::Shell()
+Shell::Shell(int argc, char *argv[], char **envp)
 {
+  this->argv.reserve(static_cast<std::size_t>(argc));
+  for (int i{}; i < argc; ++i)
+    this->argv.emplace_back(argv[i] ? argv[i] : "");
+
+  for (char **env = envp; env && *env; ++env)
+    this->envp.emplace_back(*env);
+
   registerBuiltin("exit", [](const auto &)
                   {
     std::exit(0);
@@ -28,6 +35,9 @@ Shell::Shell()
 
   registerBuiltin("type", [this](const auto &args)
                   { return runType(args); });
+
+  registerBuiltin("pwd", [this](const auto &)
+                  { return runPwd(); });
 }
 
 void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
@@ -125,6 +135,22 @@ int Shell::runType(const std::vector<std::string> &args) const
   }
 
   return 0;
+}
+
+int Shell::runPwd()
+{
+  const std::string prefix = "PWD=";
+  for (const auto &entry : envp)
+  {
+    if (entry.compare(0, prefix.size(), prefix) == 0)
+    {
+      std::cout << entry.substr(prefix.size()) << std::endl;
+      return 0;
+    }
+  }
+
+  std::cerr << "pwd: PWD not set" << std::endl;
+  return 1;
 }
 
 std::optional<std::string> Shell::findExecutable(const std::string &name) const
