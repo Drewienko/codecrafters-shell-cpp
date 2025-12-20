@@ -1,6 +1,8 @@
 #include "shell.hpp"
 
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <iostream>
@@ -38,6 +40,9 @@ Shell::Shell(int argc, char *argv[], char **envp)
 
   registerBuiltin("pwd", [this](const auto &)
                   { return runPwd(); });
+
+  registerBuiltin("cd", [this](const auto &args)
+                  { return runCd(args); });
 }
 
 void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
@@ -139,18 +144,60 @@ int Shell::runType(const std::vector<std::string> &args) const
 
 int Shell::runPwd()
 {
-  const std::string prefix = "PWD=";
-  for (const auto &entry : envp)
+  if (const char *pwd = std::getenv("PWD"); pwd && *pwd)
   {
-    if (entry.compare(0, prefix.size(), prefix) == 0)
-    {
-      std::cout << entry.substr(prefix.size()) << std::endl;
-      return 0;
-    }
+    std::cout << pwd << std::endl;
+    return 0;
+  }
+
+  if (auto pwd = getEnvValue("PWD"))
+  {
+    std::cout << *pwd << std::endl;
+    return 0;
   }
 
   std::cerr << "pwd: PWD not set" << std::endl;
   return 1;
+}
+
+int Shell::runCd(const std::vector<std::string> &args)
+{
+  std::string target;
+  if (args.size() < 2)
+  {
+    const char *home = std::getenv("HOME");
+    if (!home || *home == '\0')
+    {
+      std::cerr << "cd: HOME not set" << std::endl;
+      return 1;
+    }
+    target = home;
+  }
+  else
+  {
+    target = args[1];
+  }
+
+  std::optional<std::string> oldpwd = getCurrentDir();
+  if (!oldpwd)
+    oldpwd = getEnvValue("PWD");
+
+  if (chdir(target.c_str()) != 0)
+  {
+    std::cerr << "cd: " << target << ": " << std::strerror(errno) << std::endl;
+    return 1;
+  }
+
+  std::string newpwd;
+  if (auto cwd = getCurrentDir())
+    newpwd = *cwd;
+  else
+    newpwd = target;
+
+  if (oldpwd)
+    setEnvValue("OLDPWD", *oldpwd);
+  setEnvValue("PWD", newpwd);
+  return 0;
 }
 
 std::optional<std::string> Shell::findExecutable(const std::string &name) const
@@ -200,6 +247,45 @@ bool Shell::isExecutable(const std::filesystem::path &path) const
   using std::filesystem::perms;
   const auto mask = perms::owner_exec | perms::group_exec | perms::others_exec;
   return (perms::none != (perms & mask));
+}
+
+std::optional<std::string> Shell::getEnvValue(const std::string &key) const
+{
+  const std::string prefix = key + "=";
+  for (const auto &entry : envp)
+  {
+    if (entry.compare(0, prefix.size(), prefix) == 0)
+      return entry.substr(prefix.size());
+  }
+  return std::nullopt;
+}
+
+void Shell::setEnvValue(const std::string &key, const std::string &value)
+{
+  const std::string prefix = key + "=";
+  for (auto &entry : envp)
+  {
+    if (entry.compare(0, prefix.size(), prefix) == 0)
+    {
+      entry = prefix + value;
+      setenv(key.c_str(), value.c_str(), 1);
+      return;
+    }
+  }
+
+  envp.push_back(prefix + value);
+  setenv(key.c_str(), value.c_str(), 1);
+}
+
+std::optional<std::string> Shell::getCurrentDir() const
+{
+  char *cwd = ::getcwd(nullptr, 0);
+  if (!cwd)
+    return std::nullopt;
+
+  std::string result(cwd);
+  std::free(cwd);
+  return result;
 }
 
 void Shell::run()

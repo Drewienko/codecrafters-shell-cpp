@@ -27,6 +27,10 @@ private:
   int runCommand(const std::vector<std::string> &parts);
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
+  int runCd(const std::vector<std::string> &args);
+  std::optional<std::string> getEnvValue(const std::string &key) const;
+  void setEnvValue(const std::string &key, const std::string &value);
+  std::optional<std::string> getCurrentDir() const;
   std::optional<std::string> findExecutable(const std::string &name) const;
   bool isExecutable(const std::filesystem::path &path) const;
   std::vector<char *> argvHelper(const std::vector<std::string> &parts);
