@@ -178,6 +178,20 @@ int Shell::runCd(const std::vector<std::string> &args)
     target = args[1];
   }
 
+  if (!target.empty() && target[0] == '~')
+  {
+    if (target.size() == 1 || target[1] == '/')
+    {
+      const char *home = std::getenv("HOME");
+      if (!home || *home == '\0')
+      {
+        std::cerr << "cd: HOME not set" << std::endl;
+        return 1;
+      }
+      target = std::string(home) + target.substr(1);
+    }
+  }
+
   std::optional<std::string> oldpwd = getCurrentDir();
   if (!oldpwd)
     oldpwd = getEnvValue("PWD");
