@@ -100,8 +100,16 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
       }
       if (c == '\\' && i + 1 < line.size())
       {
-        currentToken.push_back(line[i + 1]);
-        ++i;
+        char next = line[i + 1];
+        if (next == '"' || next == '\\' || next == '$' || next == '`')
+        {
+          currentToken.push_back(next);
+          ++i;
+        }
+        else
+        {
+          currentToken.push_back(c);
+        }
         tokenStarted = true;
         break;
       }
