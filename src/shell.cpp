@@ -1,12 +1,12 @@
 #include "shell.hpp"
 
 #include <cerrno>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <iostream>
-#include <sstream>
 #include <system_error>
 #include <utility>
 
@@ -52,10 +52,94 @@ void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
 
 std::vector<std::string> Shell::tokenize(const std::string &line) const
 {
-  std::istringstream stream(line);
   std::vector<std::string> parts;
-  for (std::string token; stream >> token;)
-    parts.push_back(token);
+  std::string currentToken;
+  bool tokenStarted = false;
+
+  enum class Mode
+  {
+    None,
+    Single,
+    Double
+  };
+
+  Mode mode = Mode::None;
+
+  auto pushToken = [&]()
+  {
+    if (tokenStarted)
+      parts.push_back(currentToken);
+    currentToken.clear();
+    tokenStarted = false;
+  };
+
+  for (std::size_t i{}; i < line.size(); ++i)
+  {
+    char c = line[i];
+
+    switch (mode)
+    {
+    case Mode::Single:
+      if (c == '\'')
+      {
+        mode = Mode::None;
+        tokenStarted = true;
+      }
+      else
+      {
+        currentToken.push_back(c);
+        tokenStarted = true;
+      }
+      break;
+    case Mode::Double:
+      if (c == '"')
+      {
+        mode = Mode::None;
+        tokenStarted = true;
+        break;
+      }
+      if (c == '\\' && i + 1 < line.size())
+      {
+        currentToken.push_back(line[i + 1]);
+        ++i;
+        tokenStarted = true;
+        break;
+      }
+      currentToken.push_back(c);
+      tokenStarted = true;
+      break;
+    case Mode::None:
+      if (std::isspace(static_cast<unsigned char>(c)))
+      {
+        pushToken();
+        break;
+      }
+      if (c == '\'')
+      {
+        mode = Mode::Single;
+        tokenStarted = true;
+        break;
+      }
+      if (c == '"')
+      {
+        mode = Mode::Double;
+        tokenStarted = true;
+        break;
+      }
+      if (c == '\\' && i + 1 < line.size())
+      {
+        currentToken.push_back(line[i + 1]);
+        ++i;
+        tokenStarted = true;
+        break;
+      }
+      currentToken.push_back(c);
+      tokenStarted = true;
+      break;
+    }
+  }
+
+  pushToken();
   return parts;
 }
 
