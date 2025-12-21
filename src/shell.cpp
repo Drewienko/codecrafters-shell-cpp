@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <iostream>
@@ -156,17 +157,89 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   if (parts.empty())
     return 0;
 
-  const auto cmd = commands.find(parts[0]);
-  if (cmd != commands.end())
-    return cmd->second(parts);
-
-  if (auto path = findExecutable(parts[0]))
+  OutputRedirection redir;
+  std::vector<std::string> args;
+  args.reserve(parts.size());
+  for (std::size_t i = 0; i < parts.size(); ++i)
   {
-    std::string execPath = *path + '/' + parts[0];
-    return externalCommand(*path, parts);
+    const std::string &token = parts[i];
+    bool append = false;
+    bool isRedir = false;
+
+    if (token == ">" || token == "1>")
+      isRedir = true;
+    else if (token == ">>" || token == "1>>")
+    {
+      isRedir = true;
+      append = true;
+    }
+
+    if (isRedir)
+    {
+      if (i + 1 >= parts.size())
+      {
+        std::cerr << "syntax error: missing file for redirection" << std::endl;
+        return 1;
+      }
+      redir.enabled = true;
+      redir.append = append;
+      redir.file = parts[i + 1];
+      ++i;
+      continue;
+    }
+
+    args.push_back(token);
   }
 
-  std::cerr << parts[0] << ": command not found" << std::endl;
+  if (args.empty())
+    return 0;
+
+  const auto cmd = commands.find(args[0]);
+  if (cmd != commands.end())
+  {
+    if (!redir.enabled)
+      return cmd->second(args);
+
+    int saved = dup(STDOUT_FILENO);
+    if (saved < 0)
+    {
+      perror("dup");
+      return 1;
+    }
+
+    int fd = open(redir.file.c_str(),
+                  O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                  0644);
+    if (fd < 0)
+    {
+      perror("open");
+      close(saved);
+      return 1;
+    }
+
+    if (dup2(fd, STDOUT_FILENO) < 0)
+    {
+      perror("dup2");
+      close(fd);
+      close(saved);
+      return 1;
+    }
+    close(fd);
+
+    int rc = cmd->second(args);
+    if (dup2(saved, STDOUT_FILENO) < 0)
+      perror("dup2");
+    close(saved);
+    return rc;
+  }
+
+  if (auto path = findExecutable(args[0]))
+  {
+    std::string execPath = *path + '/' + args[0];
+    return externalCommand(*path, args, redir);
+  }
+
+  std::cerr << args[0] << ": command not found" << std::endl;
   return 127;
 }
 
@@ -181,13 +254,32 @@ std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
   return argv;
 }
 
-int Shell::externalCommand(const std::string &path, const std::vector<std::string> &parts)
+int Shell::externalCommand(const std::string &path, const std::vector<std::string> &parts, const OutputRedirection &redir)
 {
 
   pid_t pid = fork();
   if (pid == 0)
   {
     std::vector<char *> argv = argvHelper(parts);
+
+    if (redir.enabled)
+    {
+      int fd = open(redir.file.c_str(),
+                    O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                    0644);
+      if (fd < 0)
+      {
+        perror("open");
+        _exit(127);
+      }
+      if (dup2(fd, STDOUT_FILENO) < 0)
+      {
+        perror("dup2");
+        close(fd);
+        _exit(127);
+      }
+      close(fd);
+    }
 
     extern char **environ;
     execve(path.c_str(), argv.data(), environ);

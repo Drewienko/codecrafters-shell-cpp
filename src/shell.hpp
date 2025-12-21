@@ -18,6 +18,13 @@ public:
   Shell &operator=(const Shell &&other) = delete;
 
 private:
+  struct OutputRedirection
+  {
+    bool enabled = false;
+    bool append = false;
+    std::string file;
+  };
+
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
 
   std::unordered_map<std::string, CommandHandler> commands;
@@ -34,5 +41,5 @@ private:
   std::optional<std::string> findExecutable(const std::string &name) const;
   bool isExecutable(const std::filesystem::path &path) const;
   std::vector<char *> argvHelper(const std::vector<std::string> &parts);
-  int externalCommand(const std::string &path, const std::vector<std::string> &parts);
+  int externalCommand(const std::string &path, const std::vector<std::string> &parts, const OutputRedirection &redir);
 };
