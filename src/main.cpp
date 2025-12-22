@@ -9,7 +9,6 @@ int main(int argc, char *argv[], char **envp)
   std::cerr << std::unitbuf;
 
   Shell shell{argc, argv, envp};
-  ::write(STDOUT_FILENO, "\x07", 1);
   shell.run();
   return 0;
 }

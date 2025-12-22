@@ -123,6 +123,12 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
       tokenStarted = true;
       break;
     case Mode::None:
+      if (c == '|')
+      {
+        pushToken();
+        parts.push_back("|");
+        break;
+      }
       if (std::isspace(static_cast<unsigned char>(c)))
       {
         pushToken();
@@ -193,14 +199,8 @@ int Shell::handleTab(int, int)
   auto matches{shell->completionTrie.collectWithPrefix(prefix)};
   if (matches.empty())
   {
-    shell->cachedPathValue.clear();
-    shell->loadPathExecutables();
-    matches = shell->completionTrie.collectWithPrefix(prefix);
-    if (matches.empty())
-    {
-      shell->resetCompletionState();
-      return 0;
-    }
+    shell->resetCompletionState();
+    return 0;
   }
 
   if (matches.size() == 1)
@@ -235,15 +235,27 @@ int Shell::handleTab(int, int)
   {
     shell->resetCompletionState();
     std::cout << "\n";
+    bool shouldList{true};
     if (matches.size() > completionQueryItems)
-      std::cout << "Display all " << matches.size() << " possibilities? (y or n)\n";
-    for (std::size_t i{}; i < matches.size(); ++i)
     {
-      if (i > 0)
-        std::cout << "  ";
-      std::cout << matches[i];
+      std::cout << "Display all " << matches.size() << " possibilities? (y or n)\n";
+      std::cout.flush();
+      int choice{rl_read_key()};
+      if (choice != 'y' && choice != 'Y')
+        shouldList = false;
     }
-    std::cout << "\n";
+
+    if (shouldList)
+    {
+      for (std::size_t i{}; i < matches.size(); ++i)
+      {
+        if (i > 0)
+          std::cout << "  ";
+        std::cout << matches[i];
+      }
+      std::cout << "\n";
+    }
+
     rl_on_new_line();
     rl_redisplay();
     return 0;
@@ -318,15 +330,10 @@ void Shell::resetCompletionState()
   pendingCompletionPoint = 0;
 }
 
-int Shell::runCommand(const std::vector<std::string> &parts)
+bool Shell::parseCommandTokens(const std::vector<std::string> &parts, ParsedCommand &command, bool allowEmpty)
 {
-  if (parts.empty())
-    return 0;
-
-  OutputRedirection stdoutRedir{};
-  OutputRedirection stderrRedir{};
-  std::vector<std::string> args{};
-  args.reserve(parts.size());
+  command = ParsedCommand{};
+  command.args.reserve(parts.size());
   for (std::size_t i{}; i < parts.size(); ++i)
   {
     const std::string &token{parts[i]};
@@ -334,19 +341,19 @@ int Shell::runCommand(const std::vector<std::string> &parts)
     OutputRedirection *target{nullptr};
 
     if (token == ">" || token == "1>")
-      target = &stdoutRedir;
+      target = &command.stdoutRedir;
     else if (token == ">>" || token == "1>>")
     {
-      target = &stdoutRedir;
+      target = &command.stdoutRedir;
       append = true;
     }
     else if (token == "2>")
     {
-      target = &stderrRedir;
+      target = &command.stderrRedir;
     }
     else if (token == "2>>")
     {
-      target = &stderrRedir;
+      target = &command.stderrRedir;
       append = true;
     }
 
@@ -355,7 +362,7 @@ int Shell::runCommand(const std::vector<std::string> &parts)
       if (i + 1 >= parts.size())
       {
         std::cerr << "syntax error: missing file for redirection\n";
-        return 1;
+        return false;
       }
       target->enabled = true;
       target->append = append;
@@ -364,17 +371,46 @@ int Shell::runCommand(const std::vector<std::string> &parts)
       continue;
     }
 
-    args.push_back(token);
+    command.args.push_back(token);
   }
 
-  if (args.empty())
+  if (command.args.empty())
+  {
+    if (allowEmpty)
+      return true;
+    std::cerr << "syntax error: missing command\n";
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<std::vector<std::string>> Shell::splitPipeline(const std::vector<std::string> &parts) const
+{
+  std::vector<std::vector<std::string>> segments{};
+  segments.emplace_back();
+  for (const auto &token : parts)
+  {
+    if (token == "|")
+    {
+      segments.emplace_back();
+      continue;
+    }
+    segments.back().push_back(token);
+  }
+  return segments;
+}
+
+int Shell::runSingleCommand(const ParsedCommand &command)
+{
+  if (command.args.empty())
     return 0;
 
-  const auto cmd{commands.find(args[0])};
+  const auto cmd{commands.find(command.args[0])};
   if (cmd != commands.end())
   {
-    if (!stdoutRedir.enabled && !stderrRedir.enabled)
-      return cmd->second(args);
+    if (!command.stdoutRedir.enabled && !command.stderrRedir.enabled)
+      return cmd->second(command.args);
 
     int savedStdout{-1};
     int savedStderr{-1};
@@ -424,29 +460,193 @@ int Shell::runCommand(const std::vector<std::string> &parts)
                      savedFd = -1;
                    }};
 
-    if (!applyRedirection(stdoutRedir, STDOUT_FILENO, savedStdout))
+    if (!applyRedirection(command.stdoutRedir, STDOUT_FILENO, savedStdout))
       return 1;
-    if (!applyRedirection(stderrRedir, STDERR_FILENO, savedStderr))
+    if (!applyRedirection(command.stderrRedir, STDERR_FILENO, savedStderr))
     {
       restoreFd(STDOUT_FILENO, savedStdout);
       return 1;
     }
 
-    int rc{cmd->second(args)};
+    int rc{cmd->second(command.args)};
     restoreFd(STDERR_FILENO, savedStderr);
     restoreFd(STDOUT_FILENO, savedStdout);
     return rc;
   }
 
-  auto path{findExecutable(args[0])};
+  auto path{findExecutable(command.args[0])};
   if (path)
   {
-    std::string execPath{*path + '/' + args[0]};
-    return externalCommand(*path, args, stdoutRedir, stderrRedir);
+    return externalCommand(*path, command.args, command.stdoutRedir, command.stderrRedir);
   }
 
-  std::cerr << args[0] << ": command not found\n";
+  std::cerr << command.args[0] << ": command not found\n";
   return 127;
+}
+
+int Shell::runPipeline(const std::vector<ParsedCommand> &commands)
+{
+  if (commands.empty())
+    return 0;
+
+  std::vector<pid_t> pids{};
+  pids.reserve(commands.size());
+
+  int prevReadFd{-1};
+  for (std::size_t i{}; i < commands.size(); ++i)
+  {
+    int pipeFd[2]{-1, -1};
+    const bool hasNext{i + 1 < commands.size()};
+    if (hasNext && pipe(pipeFd) != 0)
+    {
+      perror("pipe");
+      if (prevReadFd != -1)
+        close(prevReadFd);
+      return 1;
+    }
+
+    pid_t pid{fork()};
+    if (pid == 0)
+    {
+      if (prevReadFd != -1 && dup2(prevReadFd, STDIN_FILENO) < 0)
+      {
+        perror("dup2");
+        _exit(127);
+      }
+
+      if (hasNext && !commands[i].stdoutRedir.enabled)
+      {
+        if (dup2(pipeFd[1], STDOUT_FILENO) < 0)
+        {
+          perror("dup2");
+          _exit(127);
+        }
+      }
+
+      if (prevReadFd != -1)
+        close(prevReadFd);
+      if (hasNext)
+      {
+        close(pipeFd[0]);
+        close(pipeFd[1]);
+      }
+
+      auto applyRedirection{[&](const OutputRedirection &redir, int targetFd)
+                            {
+                              if (!redir.enabled)
+                                return true;
+
+                              int fd{open(redir.file.c_str(),
+                                          O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                                          0644)};
+                              if (fd < 0)
+                              {
+                                perror("open");
+                                return false;
+                              }
+                              if (dup2(fd, targetFd) < 0)
+                              {
+                                perror("dup2");
+                                close(fd);
+                                return false;
+                              }
+                              close(fd);
+                              return true;
+                            }};
+
+      if (!applyRedirection(commands[i].stdoutRedir, STDOUT_FILENO))
+        _exit(127);
+      if (!applyRedirection(commands[i].stderrRedir, STDERR_FILENO))
+        _exit(127);
+
+      const auto cmd{this->commands.find(commands[i].args[0])};
+      if (cmd != this->commands.end())
+      {
+        int rc{cmd->second(commands[i].args)};
+        _exit(rc);
+      }
+
+      auto path{findExecutable(commands[i].args[0])};
+      if (path)
+      {
+        std::vector<char *> argv{argvHelper(commands[i].args)};
+        extern char **environ;
+        execve(path->c_str(), argv.data(), environ);
+        perror("execve");
+        _exit(127);
+      }
+
+      std::cerr << commands[i].args[0] << ": command not found\n";
+      _exit(127);
+    }
+    else if (pid > 0)
+    {
+      pids.push_back(pid);
+      if (prevReadFd != -1)
+        close(prevReadFd);
+      if (hasNext)
+      {
+        close(pipeFd[1]);
+        prevReadFd = pipeFd[0];
+      }
+      else
+      {
+        prevReadFd = -1;
+      }
+    }
+    else
+    {
+      perror("fork");
+      if (prevReadFd != -1)
+        close(prevReadFd);
+      if (hasNext)
+      {
+        close(pipeFd[0]);
+        close(pipeFd[1]);
+      }
+      return 127;
+    }
+  }
+
+  if (prevReadFd != -1)
+    close(prevReadFd);
+
+  int lastStatus{0};
+  for (std::size_t i{}; i < pids.size(); ++i)
+  {
+    int status{};
+    waitpid(pids[i], &status, 0);
+    if (i + 1 == pids.size())
+      lastStatus = status;
+  }
+
+  return WIFEXITED(lastStatus) ? WEXITSTATUS(lastStatus) : 127;
+}
+
+int Shell::runCommand(const std::vector<std::string> &parts)
+{
+  if (parts.empty())
+    return 0;
+
+  auto segments{splitPipeline(parts)};
+  if (segments.size() > 1)
+  {
+    std::vector<ParsedCommand> parsed{};
+    parsed.reserve(segments.size());
+    for (const auto &segment : segments)
+    {
+      ParsedCommand command{};
+      if (!parseCommandTokens(segment, command, false))
+        return 1;
+      parsed.push_back(std::move(command));
+    }
+    return runPipeline(parsed);
+  }
+
+  ParsedCommand command{};
+  if (!parseCommandTokens(parts, command, true))
+    return 1;
+  return runSingleCommand(command);
 }
 
 std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
@@ -721,18 +921,43 @@ void Shell::run()
   rl_initialize();
   rl_bind_key('\t', &Shell::handleTab);
 
+  std::string buffer{};
+  bool awaitingContinuation{false};
+
   while (true)
   {
-    char *input{readline("$ ")};
+    const char *prompt{awaitingContinuation ? "> " : "$ "};
+    char *input{readline(prompt)};
     if (!input)
+    {
+      if (awaitingContinuation)
+      {
+        std::cerr << "syntax error: unexpected end of file\n";
+        buffer.clear();
+        awaitingContinuation = false;
+        continue;
+      }
       break;
-    if (input[0] != '\0')
-      add_history(input);
+    }
 
     std::string line{input};
     std::free(input);
 
-    const auto parts{tokenize(line)};
+    if (!buffer.empty())
+      buffer.push_back('\n');
+    buffer += line;
+
+    const auto parts{tokenize(buffer)};
+    if (!parts.empty() && parts.back() == "|")
+    {
+      awaitingContinuation = true;
+      continue;
+    }
+
+    awaitingContinuation = false;
+    if (!buffer.empty())
+      add_history(buffer.c_str());
     runCommand(parts);
+    buffer.clear();
   }
 }

@@ -30,6 +30,13 @@ private:
     std::string file{};
   };
 
+  struct ParsedCommand
+  {
+    std::vector<std::string> args{};
+    OutputRedirection stdoutRedir{};
+    OutputRedirection stderrRedir{};
+  };
+
   static inline Shell *activeShell{nullptr};
 
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
@@ -48,6 +55,10 @@ private:
   int runCommand(const std::vector<std::string> &parts);
   void loadPathExecutables();
   void resetCompletionState();
+  bool parseCommandTokens(const std::vector<std::string> &parts, ParsedCommand &command, bool allowEmpty);
+  std::vector<std::vector<std::string>> splitPipeline(const std::vector<std::string> &parts) const;
+  int runSingleCommand(const ParsedCommand &command);
+  int runPipeline(const std::vector<ParsedCommand> &commands);
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
   int runCd(const std::vector<std::string> &args);
