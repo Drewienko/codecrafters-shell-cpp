@@ -203,6 +203,7 @@ int Shell::handleTab(int, int)
     return 0;
   }
 
+  ::write(STDOUT_FILENO, "\x07", 1);
   if (matches.size() == 1)
   {
     shell->resetCompletionState();
@@ -264,7 +265,6 @@ int Shell::handleTab(int, int)
   shell->pendingCompletionList = true;
   shell->pendingCompletionLine = line;
   shell->pendingCompletionPoint = point;
-  ::write(STDOUT_FILENO, "\x07", 1);
   return 0;
 }
 
