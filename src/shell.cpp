@@ -1,5 +1,6 @@
 #include "shell.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -8,6 +9,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <iostream>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include <system_error>
 #include <utility>
 
@@ -150,6 +153,81 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
 
   pushToken();
   return parts;
+}
+
+std::vector<std::string> Shell::builtinMatches(const std::string &prefix) const
+{
+  std::vector<std::string> matches{};
+  for (const auto &entry : commands)
+  {
+    if (entry.first.starts_with(prefix))
+      matches.push_back(entry.first);
+  }
+  std::sort(matches.begin(), matches.end());
+  return matches;
+}
+
+std::string Shell::longestCommonPrefix(const std::vector<std::string> &values)
+{
+  if (values.empty())
+    return "";
+
+  std::string prefix{values.front()};
+  for (std::size_t i{1}; i < values.size(); ++i)
+  {
+    const auto &value{values[i]};
+    std::size_t j{};
+    while (j < prefix.size() && j < value.size() && prefix[j] == value[j])
+      ++j;
+    prefix.resize(j);
+    if (prefix.empty())
+      break;
+  }
+  return prefix;
+}
+
+char **Shell::completionHook(const char *text, int start, int)
+{
+  rl_attempted_completion_over = 1;
+  rl_completion_append_character = '\0';
+
+  if (!activeShell)
+    return nullptr;
+  if (start != 0)
+    return nullptr;
+
+  std::string prefix{text ? text : ""};
+  auto matches{activeShell->builtinMatches(prefix)};
+  if (matches.empty())
+    return nullptr;
+
+  std::string completion{};
+  if (matches.size() == 1)
+  {
+    completion = matches.front();
+    completion.push_back(' ');
+  }
+  else
+  {
+    completion = longestCommonPrefix(matches);
+    if (completion.size() <= prefix.size())
+      return nullptr;
+  }
+
+  char **result{static_cast<char **>(std::malloc(2 * sizeof(char *)))};
+  if (!result)
+    return nullptr;
+
+  char *buffer{static_cast<char *>(std::malloc(completion.size() + 1))};
+  if (!buffer)
+  {
+    std::free(result);
+    return nullptr;
+  }
+  std::memcpy(buffer, completion.c_str(), completion.size() + 1);
+  result[0] = buffer;
+  result[1] = nullptr;
+  return result;
 }
 
 int Shell::runCommand(const std::vector<std::string> &parts)
@@ -551,12 +629,19 @@ std::optional<std::string> Shell::getCurrentDir() const
 
 void Shell::run()
 {
-  std::string line{};
+  activeShell = this;
+  rl_attempted_completion_function = &Shell::completionHook;
+
   while (true)
   {
-    std::cout << "$ ";
-    if (!std::getline(std::cin, line))
+    char *input{readline("$ ")};
+    if (!input)
       break;
+    if (input[0] != '\0')
+      add_history(input);
+
+    std::string line{input};
+    std::free(input);
 
     const auto parts{tokenize(line)};
     runCommand(parts);

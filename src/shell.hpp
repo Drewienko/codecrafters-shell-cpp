@@ -28,12 +28,17 @@ private:
     std::string file{};
   };
 
+  static inline Shell *activeShell{nullptr};
+
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
 
   std::unordered_map<std::string, CommandHandler> commands;
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
   std::vector<std::string> tokenize(const std::string &line) const;
+  std::vector<std::string> builtinMatches(const std::string &prefix) const;
+  static std::string longestCommonPrefix(const std::vector<std::string> &values);
+  static char **completionHook(const char *text, int start, int end);
   int runCommand(const std::vector<std::string> &parts);
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
