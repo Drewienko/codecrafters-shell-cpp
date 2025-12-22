@@ -203,7 +203,6 @@ int Shell::handleTab(int, int)
     return 0;
   }
 
-  ::write(STDOUT_FILENO, "\x07", 1);
   if (matches.size() == 1)
   {
     shell->resetCompletionState();
@@ -219,6 +218,7 @@ int Shell::handleTab(int, int)
       rl_insert_text(" ");
     }
     rl_redisplay();
+    ::write(STDOUT_FILENO, "\x07", 1);
     return 0;
   }
 
@@ -228,7 +228,10 @@ int Shell::handleTab(int, int)
     shell->resetCompletionState();
     std::string suffix{lcp.substr(prefix.size())};
     rl_insert_text(suffix.c_str());
+    ::write(STDOUT_FILENO, "\x07", 1);
     rl_redisplay();
+
+    ::write(STDOUT_FILENO, "\x07", 1);
     return 0;
   }
 
@@ -259,9 +262,11 @@ int Shell::handleTab(int, int)
 
     rl_on_new_line();
     rl_redisplay();
+
+    ::write(STDOUT_FILENO, "\x07", 1);
     return 0;
   }
-
+  ::write(STDOUT_FILENO, "\x07", 1);
   shell->pendingCompletionList = true;
   shell->pendingCompletionLine = line;
   shell->pendingCompletionPoint = point;
