@@ -36,12 +36,17 @@ private:
 
   std::unordered_map<std::string, CommandHandler> commands;
   Trie completionTrie{};
+  bool pendingCompletionList{false};
+  std::string pendingCompletionLine{};
+  std::size_t pendingCompletionPoint{0};
+  static constexpr std::size_t completionQueryItems{100};
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
   std::vector<std::string> tokenize(const std::string &line) const;
-  static char **completionHook(const char *text, int start, int end);
+  static int handleTab(int count, int key);
   int runCommand(const std::vector<std::string> &parts);
   void loadPathExecutables();
+  void resetCompletionState();
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
   int runCd(const std::vector<std::string> &args);

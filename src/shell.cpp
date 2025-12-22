@@ -157,48 +157,87 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
   return parts;
 }
 
-char **Shell::completionHook(const char *text, int start, int)
+int Shell::handleTab(int, int)
 {
-  rl_attempted_completion_over = 1;
-  rl_completion_append_character = '\0';
-
   if (!activeShell)
-    return nullptr;
-  if (start != 0)
-    return nullptr;
+    return 0;
 
-  std::string prefix{text ? text : ""};
-  auto &trie{activeShell->completionTrie};
-  if (!trie.hasPrefix(prefix))
-    return nullptr;
-
-  std::string completion{};
-  if (auto unique{trie.uniqueCompletion(prefix)}; unique)
-  {
-    completion = *unique;
-    completion.push_back(' ');
-  }
-  else
-  {
-    completion = trie.longestCommonPrefix(prefix);
-    if (completion.size() <= prefix.size())
-      return nullptr;
-  }
-
-  char **result{static_cast<char **>(std::malloc(2 * sizeof(char *)))};
-  if (!result)
-    return nullptr;
-
-  char *buffer{static_cast<char *>(std::malloc(completion.size() + 1))};
+  Shell *shell{activeShell};
+  const char *buffer{rl_line_buffer};
   if (!buffer)
+    return 0;
+
+  std::string line{buffer};
+  std::size_t point{static_cast<std::size_t>(rl_point)};
+  if (point > line.size())
+    point = line.size();
+
+  std::size_t start{point};
+  while (start > 0 && !std::isspace(static_cast<unsigned char>(line[start - 1])))
+    --start;
+
+  if (start != 0)
   {
-    std::free(result);
-    return nullptr;
+    shell->resetCompletionState();
+    return 0;
   }
-  std::memcpy(buffer, completion.c_str(), completion.size() + 1);
-  result[0] = buffer;
-  result[1] = nullptr;
-  return result;
+
+  std::string prefix{line.substr(0, point)};
+  if (prefix.empty())
+  {
+    shell->resetCompletionState();
+    return 0;
+  }
+
+  auto matches{shell->completionTrie.collectWithPrefix(prefix)};
+  if (matches.empty())
+  {
+    shell->resetCompletionState();
+    return 0;
+  }
+
+  if (matches.size() == 1)
+  {
+    shell->resetCompletionState();
+    const std::string &full{matches.front()};
+    if (full.size() > prefix.size())
+    {
+      std::string suffix{full.substr(prefix.size())};
+      suffix.push_back(' ');
+      rl_insert_text(suffix.c_str());
+    }
+    else
+    {
+      rl_insert_text(" ");
+    }
+    rl_redisplay();
+    return 0;
+  }
+
+  if (shell->pendingCompletionList && shell->pendingCompletionLine == line && shell->pendingCompletionPoint == point)
+  {
+    shell->resetCompletionState();
+    std::cout << "\n";
+    if (matches.size() > completionQueryItems)
+      std::cout << "Display all " << matches.size() << " possibilities? (y or n)\n";
+    for (std::size_t i{}; i < matches.size(); ++i)
+    {
+      if (i > 0)
+        std::cout << "  ";
+      std::cout << matches[i];
+    }
+    std::cout << "\n";
+    rl_on_new_line();
+    rl_redisplay();
+    return 0;
+  }
+
+  shell->pendingCompletionList = true;
+  shell->pendingCompletionLine = line;
+  shell->pendingCompletionPoint = point;
+  std::cout << "\x07";
+  std::cout.flush();
+  return 0;
 }
 
 void Shell::loadPathExecutables()
@@ -247,6 +286,13 @@ void Shell::loadPathExecutables()
   }
 
   loadSegment(segment);
+}
+
+void Shell::resetCompletionState()
+{
+  pendingCompletionList = false;
+  pendingCompletionLine.clear();
+  pendingCompletionPoint = 0;
 }
 
 int Shell::runCommand(const std::vector<std::string> &parts)
@@ -649,7 +695,7 @@ std::optional<std::string> Shell::getCurrentDir() const
 void Shell::run()
 {
   activeShell = this;
-  rl_attempted_completion_function = &Shell::completionHook;
+  rl_bind_key('\t', &Shell::handleTab);
 
   while (true)
   {

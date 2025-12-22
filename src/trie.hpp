@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 class Trie
 {
@@ -26,6 +27,7 @@ public:
   std::size_t countWithPrefix(std::string_view prefix) const;
   std::optional<std::string> uniqueCompletion(std::string_view prefix) const;
   std::string longestCommonPrefix(std::string_view prefix) const;
+  std::vector<std::string> collectWithPrefix(std::string_view prefix) const;
 
 private:
   struct Node
@@ -39,4 +41,5 @@ private:
 
   Node *findNode(std::string_view text);
   const Node *findNode(std::string_view text) const;
+  void collectFrom(const Node *node, std::string &current, std::vector<std::string> &results) const;
 };
