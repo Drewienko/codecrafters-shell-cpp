@@ -200,6 +200,7 @@ int Shell::handleTab(int, int)
   if (matches.empty())
   {
     shell->resetCompletionState();
+    ::write(STDOUT_FILENO, "\x07", 1);
     return 0;
   }
 
