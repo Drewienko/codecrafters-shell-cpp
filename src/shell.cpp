@@ -157,33 +157,43 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   if (parts.empty())
     return 0;
 
-  OutputRedirection redir;
+  OutputRedirection stdoutRedir;
+  OutputRedirection stderrRedir;
   std::vector<std::string> args;
   args.reserve(parts.size());
   for (std::size_t i = 0; i < parts.size(); ++i)
   {
     const std::string &token = parts[i];
     bool append = false;
-    bool isRedir = false;
+    OutputRedirection *target = nullptr;
 
     if (token == ">" || token == "1>")
-      isRedir = true;
+      target = &stdoutRedir;
     else if (token == ">>" || token == "1>>")
     {
-      isRedir = true;
+      target = &stdoutRedir;
+      append = true;
+    }
+    else if (token == "2>")
+    {
+      target = &stderrRedir;
+    }
+    else if (token == "2>>")
+    {
+      target = &stderrRedir;
       append = true;
     }
 
-    if (isRedir)
+    if (target)
     {
       if (i + 1 >= parts.size())
       {
         std::cerr << "syntax error: missing file for redirection" << std::endl;
         return 1;
       }
-      redir.enabled = true;
-      redir.append = append;
-      redir.file = parts[i + 1];
+      target->enabled = true;
+      target->append = append;
+      target->file = parts[i + 1];
       ++i;
       continue;
     }
@@ -197,46 +207,75 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   const auto cmd = commands.find(args[0]);
   if (cmd != commands.end())
   {
-    if (!redir.enabled)
+    if (!stdoutRedir.enabled && !stderrRedir.enabled)
       return cmd->second(args);
 
-    int saved = dup(STDOUT_FILENO);
-    if (saved < 0)
-    {
-      perror("dup");
-      return 1;
-    }
+    int savedStdout = -1;
+    int savedStderr = -1;
 
-    int fd = open(redir.file.c_str(),
-                  O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
-                  0644);
-    if (fd < 0)
+    auto applyRedirection = [&](const OutputRedirection &redir, int targetFd, int &savedFd) -> bool
     {
-      perror("open");
-      close(saved);
-      return 1;
-    }
+      if (!redir.enabled)
+        return true;
 
-    if (dup2(fd, STDOUT_FILENO) < 0)
-    {
-      perror("dup2");
+      savedFd = dup(targetFd);
+      if (savedFd < 0)
+      {
+        perror("dup");
+        return false;
+      }
+
+      int fd = open(redir.file.c_str(),
+                    O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                    0644);
+      if (fd < 0)
+      {
+        perror("open");
+        close(savedFd);
+        savedFd = -1;
+        return false;
+      }
+
+      if (dup2(fd, targetFd) < 0)
+      {
+        perror("dup2");
+        close(fd);
+        close(savedFd);
+        savedFd = -1;
+        return false;
+      }
       close(fd);
-      close(saved);
+      return true;
+    };
+
+    auto restoreFd = [&](int targetFd, int &savedFd)
+    {
+      if (savedFd < 0)
+        return;
+      if (dup2(savedFd, targetFd) < 0)
+        perror("dup2");
+      close(savedFd);
+      savedFd = -1;
+    };
+
+    if (!applyRedirection(stdoutRedir, STDOUT_FILENO, savedStdout))
+      return 1;
+    if (!applyRedirection(stderrRedir, STDERR_FILENO, savedStderr))
+    {
+      restoreFd(STDOUT_FILENO, savedStdout);
       return 1;
     }
-    close(fd);
 
     int rc = cmd->second(args);
-    if (dup2(saved, STDOUT_FILENO) < 0)
-      perror("dup2");
-    close(saved);
+    restoreFd(STDERR_FILENO, savedStderr);
+    restoreFd(STDOUT_FILENO, savedStdout);
     return rc;
   }
 
   if (auto path = findExecutable(args[0]))
   {
     std::string execPath = *path + '/' + args[0];
-    return externalCommand(*path, args, redir);
+    return externalCommand(*path, args, stdoutRedir, stderrRedir);
   }
 
   std::cerr << args[0] << ": command not found" << std::endl;
@@ -254,7 +293,10 @@ std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
   return argv;
 }
 
-int Shell::externalCommand(const std::string &path, const std::vector<std::string> &parts, const OutputRedirection &redir)
+int Shell::externalCommand(const std::string &path,
+                           const std::vector<std::string> &parts,
+                           const OutputRedirection &stdoutRedir,
+                           const OutputRedirection &stderrRedir)
 {
 
   pid_t pid = fork();
@@ -262,10 +304,10 @@ int Shell::externalCommand(const std::string &path, const std::vector<std::strin
   {
     std::vector<char *> argv = argvHelper(parts);
 
-    if (redir.enabled)
+    if (stdoutRedir.enabled)
     {
-      int fd = open(redir.file.c_str(),
-                    O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+      int fd = open(stdoutRedir.file.c_str(),
+                    O_WRONLY | O_CREAT | (stdoutRedir.append ? O_APPEND : O_TRUNC),
                     0644);
       if (fd < 0)
       {
@@ -273,6 +315,25 @@ int Shell::externalCommand(const std::string &path, const std::vector<std::strin
         _exit(127);
       }
       if (dup2(fd, STDOUT_FILENO) < 0)
+      {
+        perror("dup2");
+        close(fd);
+        _exit(127);
+      }
+      close(fd);
+    }
+
+    if (stderrRedir.enabled)
+    {
+      int fd = open(stderrRedir.file.c_str(),
+                    O_WRONLY | O_CREAT | (stderrRedir.append ? O_APPEND : O_TRUNC),
+                    0644);
+      if (fd < 0)
+      {
+        perror("open");
+        _exit(127);
+      }
+      if (dup2(fd, STDERR_FILENO) < 0)
       {
         perror("dup2");
         close(fd);
