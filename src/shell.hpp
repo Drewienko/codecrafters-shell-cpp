@@ -62,6 +62,7 @@ private:
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
   int runCd(const std::vector<std::string> &args);
+  int runHistory(const std::vector<std::string> &args);
   std::optional<std::string> getEnvValue(const std::string &key) const;
   void setEnvValue(const std::string &key, const std::string &value);
   std::optional<std::string> getCurrentDir() const;

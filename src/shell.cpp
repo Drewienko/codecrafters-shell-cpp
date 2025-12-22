@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <iomanip>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <iostream>
@@ -46,6 +47,9 @@ Shell::Shell(int argc, char *argv[], char **envp)
 
   registerBuiltin("cd", [this](const auto &args)
                   { return runCd(args); });
+
+  registerBuiltin("history", [this](const auto &args)
+                  { return runHistory(args); });
 
   loadPathExecutables();
 }
@@ -830,6 +834,45 @@ int Shell::runCd(const std::vector<std::string> &args)
   if (oldPwd)
     setEnvValue("OLDPWD", *oldPwd);
   setEnvValue("PWD", newPwd);
+  return 0;
+}
+
+int Shell::runHistory(const std::vector<std::string> &args)
+{
+  HIST_ENTRY **entries{history_list()};
+  if (!entries)
+    return 0;
+
+  int entryCount{};
+  while (entries[entryCount])
+    ++entryCount;
+
+  int limit{-1};
+  if (args.size() > 1)
+  {
+    try
+    {
+      std::size_t consumed{};
+      int requested{std::stoi(args[1], &consumed)};
+      if (consumed == args[1].size() && requested >= 0)
+        limit = requested;
+    }
+    catch (const std::exception &)
+    {
+    }
+  }
+
+  int startIndex{};
+  if (limit >= 0 && limit < entryCount)
+    startIndex = entryCount - limit;
+
+  for (int i{startIndex}; i < entryCount; ++i)
+  {
+    const int index{history_base + i};
+    const char *line{entries[i]->line ? entries[i]->line : ""};
+    std::cout << std::setw(5) << index << "  " << line << "\n";
+  }
+
   return 0;
 }
 
