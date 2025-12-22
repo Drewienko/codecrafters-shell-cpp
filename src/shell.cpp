@@ -1,6 +1,5 @@
 #include "shell.hpp"
 
-#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -47,11 +46,14 @@ Shell::Shell(int argc, char *argv[], char **envp)
 
   registerBuiltin("cd", [this](const auto &args)
                   { return runCd(args); });
+
+  loadPathExecutables();
 }
 
 void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
 {
   commands[name] = std::move(handler);
+  completionTrie.insert(name, Trie::NodeKind::Builtin);
 }
 
 std::vector<std::string> Shell::tokenize(const std::string &line) const
@@ -155,37 +157,6 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
   return parts;
 }
 
-std::vector<std::string> Shell::builtinMatches(const std::string &prefix) const
-{
-  std::vector<std::string> matches{};
-  for (const auto &entry : commands)
-  {
-    if (entry.first.starts_with(prefix))
-      matches.push_back(entry.first);
-  }
-  std::sort(matches.begin(), matches.end());
-  return matches;
-}
-
-std::string Shell::longestCommonPrefix(const std::vector<std::string> &values)
-{
-  if (values.empty())
-    return "";
-
-  std::string prefix{values.front()};
-  for (std::size_t i{1}; i < values.size(); ++i)
-  {
-    const auto &value{values[i]};
-    std::size_t j{};
-    while (j < prefix.size() && j < value.size() && prefix[j] == value[j])
-      ++j;
-    prefix.resize(j);
-    if (prefix.empty())
-      break;
-  }
-  return prefix;
-}
-
 char **Shell::completionHook(const char *text, int start, int)
 {
   rl_attempted_completion_over = 1;
@@ -197,19 +168,19 @@ char **Shell::completionHook(const char *text, int start, int)
     return nullptr;
 
   std::string prefix{text ? text : ""};
-  auto matches{activeShell->builtinMatches(prefix)};
-  if (matches.empty())
+  auto &trie{activeShell->completionTrie};
+  if (!trie.hasPrefix(prefix))
     return nullptr;
 
   std::string completion{};
-  if (matches.size() == 1)
+  if (auto unique{trie.uniqueCompletion(prefix)}; unique)
   {
-    completion = matches.front();
+    completion = *unique;
     completion.push_back(' ');
   }
   else
   {
-    completion = longestCommonPrefix(matches);
+    completion = trie.longestCommonPrefix(prefix);
     if (completion.size() <= prefix.size())
       return nullptr;
   }
@@ -228,6 +199,54 @@ char **Shell::completionHook(const char *text, int start, int)
   result[0] = buffer;
   result[1] = nullptr;
   return result;
+}
+
+void Shell::loadPathExecutables()
+{
+  const char *pathEnv{std::getenv("PATH")};
+  if (!pathEnv)
+    return;
+
+  const std::string pathValue{pathEnv};
+  std::string segment{};
+
+  auto loadSegment{[&](const std::string &dir)
+  {
+    if (dir.empty())
+      return;
+
+    std::error_code ec{};
+    std::filesystem::directory_iterator it{dir, ec};
+    if (ec)
+      return;
+
+    for (const auto &entry : it)
+    {
+      if (!entry.is_regular_file(ec))
+      {
+        if (ec)
+          ec.clear();
+        continue;
+      }
+
+      const auto &path{entry.path()};
+      if (isExecutable(path))
+        completionTrie.insert(path.filename().string(), Trie::NodeKind::PathExecutable);
+    }
+  }};
+
+  for (char c : pathValue)
+  {
+    if (c == ':' || c == ';')
+    {
+      loadSegment(segment);
+      segment.clear();
+      continue;
+    }
+    segment.push_back(c);
+  }
+
+  loadSegment(segment);
 }
 
 int Shell::runCommand(const std::vector<std::string> &parts)

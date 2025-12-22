@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "trie.hpp"
+
 class Shell
 {
 public:
@@ -33,13 +35,13 @@ private:
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
 
   std::unordered_map<std::string, CommandHandler> commands;
+  Trie completionTrie{};
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
   std::vector<std::string> tokenize(const std::string &line) const;
-  std::vector<std::string> builtinMatches(const std::string &prefix) const;
-  static std::string longestCommonPrefix(const std::vector<std::string> &values);
   static char **completionHook(const char *text, int start, int end);
   int runCommand(const std::vector<std::string> &parts);
+  void loadPathExecutables();
   int runType(const std::vector<std::string> &args) const;
   int runPwd();
   int runCd(const std::vector<std::string> &args);
