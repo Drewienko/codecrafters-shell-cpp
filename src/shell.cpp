@@ -217,9 +217,17 @@ int Shell::handleTab(int, int)
     {
       rl_insert_text(" ");
     }
-    ::write(STDOUT_FILENO, "\x07", 1);
     rl_redisplay();
-    ::write(STDOUT_FILENO, "\x07", 1);
+    return 0;
+  }
+
+  std::string lcp{shell->completionTrie.longestCommonPrefix(prefix)};
+  if (lcp.size() > prefix.size())
+  {
+    shell->resetCompletionState();
+    std::string suffix{lcp.substr(prefix.size())};
+    rl_insert_text(suffix.c_str());
+    rl_redisplay();
     return 0;
   }
 
