@@ -72,12 +72,12 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
   Mode mode{Mode::None};
 
   auto pushToken{[&]()
-  {
-    if (tokenStarted)
-      parts.push_back(currentToken);
-    currentToken.clear();
-    tokenStarted = false;
-  }};
+                 {
+                   if (tokenStarted)
+                     parts.push_back(currentToken);
+                   currentToken.clear();
+                   tokenStarted = false;
+                 }};
 
   for (std::size_t i{}; i < line.size(); ++i)
   {
@@ -189,11 +189,18 @@ int Shell::handleTab(int, int)
     return 0;
   }
 
+  shell->loadPathExecutables();
   auto matches{shell->completionTrie.collectWithPrefix(prefix)};
   if (matches.empty())
   {
-    shell->resetCompletionState();
-    return 0;
+    shell->cachedPathValue.clear();
+    shell->loadPathExecutables();
+    matches = shell->completionTrie.collectWithPrefix(prefix);
+    if (matches.empty())
+    {
+      shell->resetCompletionState();
+      return 0;
+    }
   }
 
   if (matches.size() == 1)
@@ -210,7 +217,9 @@ int Shell::handleTab(int, int)
     {
       rl_insert_text(" ");
     }
+    ::write(STDOUT_FILENO, "\x07", 1);
     rl_redisplay();
+    ::write(STDOUT_FILENO, "\x07", 1);
     return 0;
   }
 
@@ -235,8 +244,7 @@ int Shell::handleTab(int, int)
   shell->pendingCompletionList = true;
   shell->pendingCompletionLine = line;
   shell->pendingCompletionPoint = point;
-  std::cout << "\x07";
-  std::cout.flush();
+  ::write(STDOUT_FILENO, "\x07", 1);
   return 0;
 }
 
@@ -245,34 +253,41 @@ void Shell::loadPathExecutables()
   const char *pathEnv{std::getenv("PATH")};
   if (!pathEnv)
     return;
-
   const std::string pathValue{pathEnv};
+  if (pathValue == cachedPathValue)
+    return;
+
+  cachedPathValue = pathValue;
+  completionTrie.clear();
+  for (const auto &entry : commands)
+    completionTrie.insert(entry.first, Trie::NodeKind::Builtin);
+
   std::string segment{};
 
   auto loadSegment{[&](const std::string &dir)
-  {
-    if (dir.empty())
-      return;
+                   {
+                     if (dir.empty())
+                       return;
 
-    std::error_code ec{};
-    std::filesystem::directory_iterator it{dir, ec};
-    if (ec)
-      return;
+                     std::error_code ec{};
+                     std::filesystem::directory_iterator it{dir, ec};
+                     if (ec)
+                       return;
 
-    for (const auto &entry : it)
-    {
-      if (!entry.is_regular_file(ec))
-      {
-        if (ec)
-          ec.clear();
-        continue;
-      }
+                     for (const auto &entry : it)
+                     {
+                       if (!entry.is_regular_file(ec))
+                       {
+                         if (ec)
+                           ec.clear();
+                         continue;
+                       }
 
-      const auto &path{entry.path()};
-      if (isExecutable(path))
-        completionTrie.insert(path.filename().string(), Trie::NodeKind::PathExecutable);
-    }
-  }};
+                       const auto &path{entry.path()};
+                       if (isExecutable(path))
+                         completionTrie.insert(path.filename().string(), Trie::NodeKind::PathExecutable);
+                     }
+                   }};
 
   for (char c : pathValue)
   {
@@ -357,49 +372,49 @@ int Shell::runCommand(const std::vector<std::string> &parts)
     int savedStderr{-1};
 
     auto applyRedirection{[&](const OutputRedirection &redir, int targetFd, int &savedFd) -> bool
-    {
-      if (!redir.enabled)
-        return true;
+                          {
+                            if (!redir.enabled)
+                              return true;
 
-      savedFd = dup(targetFd);
-      if (savedFd < 0)
-      {
-        perror("dup");
-        return false;
-      }
+                            savedFd = dup(targetFd);
+                            if (savedFd < 0)
+                            {
+                              perror("dup");
+                              return false;
+                            }
 
-      int fd{open(redir.file.c_str(),
-                  O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
-                  0644)};
-      if (fd < 0)
-      {
-        perror("open");
-        close(savedFd);
-        savedFd = -1;
-        return false;
-      }
+                            int fd{open(redir.file.c_str(),
+                                        O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                                        0644)};
+                            if (fd < 0)
+                            {
+                              perror("open");
+                              close(savedFd);
+                              savedFd = -1;
+                              return false;
+                            }
 
-      if (dup2(fd, targetFd) < 0)
-      {
-        perror("dup2");
-        close(fd);
-        close(savedFd);
-        savedFd = -1;
-        return false;
-      }
-      close(fd);
-      return true;
-    }};
+                            if (dup2(fd, targetFd) < 0)
+                            {
+                              perror("dup2");
+                              close(fd);
+                              close(savedFd);
+                              savedFd = -1;
+                              return false;
+                            }
+                            close(fd);
+                            return true;
+                          }};
 
     auto restoreFd{[&](int targetFd, int &savedFd)
-    {
-      if (savedFd < 0)
-        return;
-      if (dup2(savedFd, targetFd) < 0)
-        perror("dup2");
-      close(savedFd);
-      savedFd = -1;
-    }};
+                   {
+                     if (savedFd < 0)
+                       return;
+                     if (dup2(savedFd, targetFd) < 0)
+                       perror("dup2");
+                     close(savedFd);
+                     savedFd = -1;
+                   }};
 
     if (!applyRedirection(stdoutRedir, STDOUT_FILENO, savedStdout))
       return 1;
@@ -614,14 +629,14 @@ std::optional<std::string> Shell::findExecutable(const std::string &name) const
   std::string segment{};
 
   auto checkSegment{[&](const std::string &dir) -> std::optional<std::string>
-  {
-    if (dir.empty())
-      return std::nullopt;
-    const std::filesystem::path candidate{std::filesystem::path(dir) / name};
-    if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
-      return candidate.string();
-    return std::nullopt;
-  }};
+                    {
+                      if (dir.empty())
+                        return std::nullopt;
+                      const std::filesystem::path candidate{std::filesystem::path(dir) / name};
+                      if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
+                        return candidate.string();
+                      return std::nullopt;
+                    }};
 
   for (char c : pathValue)
   {
@@ -695,6 +710,7 @@ std::optional<std::string> Shell::getCurrentDir() const
 void Shell::run()
 {
   activeShell = this;
+  rl_initialize();
   rl_bind_key('\t', &Shell::handleTab);
 
   while (true)

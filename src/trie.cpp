@@ -2,11 +2,6 @@
 
 #include <algorithm>
 
-namespace
-{
-constexpr auto notExecutable = Trie::NodeKind::NotExecutable;
-}
-
 void Trie::clear()
 {
   root = Node{};
@@ -21,11 +16,11 @@ void Trie::insert(std::string_view word, NodeKind nodeKind)
 {
   if (word.empty())
     return;
-  if (nodeKind == notExecutable)
+  if (nodeKind == NodeKind::NotExecutable)
     return;
 
   bool isNewWord{true};
-  if (const Node *existing{findNode(word)}; existing && existing->nodeKind != notExecutable)
+  if (const Node *existing{findNode(word)}; existing && existing->nodeKind != NodeKind::NotExecutable)
     isNewWord = false;
 
   Node *node{&root};
@@ -48,7 +43,7 @@ void Trie::insert(std::string_view word, NodeKind nodeKind)
 bool Trie::contains(std::string_view word) const
 {
   const Node *node{findNode(word)};
-  return node && node->nodeKind != notExecutable;
+  return node && node->nodeKind != NodeKind::NotExecutable;
 }
 
 bool Trie::hasPrefix(std::string_view prefix) const
@@ -69,7 +64,7 @@ std::optional<std::string> Trie::uniqueCompletion(std::string_view prefix) const
     return std::nullopt;
 
   std::string result{prefix};
-  while (node && node->nodeKind == notExecutable)
+  while (node && node->nodeKind == NodeKind::NotExecutable)
   {
     if (node->children.empty())
       break;
@@ -87,7 +82,7 @@ std::string Trie::longestCommonPrefix(std::string_view prefix) const
     return "";
 
   std::string result{prefix};
-  while (node->children.size() == 1 && node->nodeKind == notExecutable)
+  while (node->children.size() == 1 && node->nodeKind == NodeKind::NotExecutable)
   {
     const auto it{node->children.begin()};
     result.push_back(it->first);
@@ -139,7 +134,7 @@ void Trie::collectFrom(const Node *node, std::string &current, std::vector<std::
 {
   if (!node)
     return;
-  if (node->nodeKind != notExecutable)
+  if (node->nodeKind != NodeKind::NotExecutable)
     results.push_back(current);
 
   for (const auto &entry : node->children)
