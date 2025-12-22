@@ -15,14 +15,17 @@ public:
   std::vector<std::string> argv, envp;
 
   ~Shell() = default;
-  Shell &operator=(const Shell &&other) = delete;
+  Shell(const Shell &) = default;
+  Shell &operator=(const Shell &) = default;
+  Shell(Shell &&) noexcept = default;
+  Shell &operator=(Shell &&) noexcept = default;
 
 private:
   struct OutputRedirection
   {
-    bool enabled = false;
-    bool append = false;
-    std::string file;
+    bool enabled{false};
+    bool append{false};
+    std::string file{};
   };
 
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;

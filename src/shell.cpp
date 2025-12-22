@@ -17,7 +17,7 @@ Shell::Shell(int argc, char *argv[], char **envp)
   for (int i{}; i < argc; ++i)
     this->argv.emplace_back(argv[i] ? argv[i] : "");
 
-  for (char **env = envp; env && *env; ++env)
+  for (char **env{envp}; env && *env; ++env)
     this->envp.emplace_back(*env);
 
   registerBuiltin("exit", [](const auto &)
@@ -27,13 +27,13 @@ Shell::Shell(int argc, char *argv[], char **envp)
 
   registerBuiltin("echo", [](const auto &args)
                   {
-    for (std::size_t i = 1; i < args.size(); ++i)
+    for (std::size_t i{1}; i < args.size(); ++i)
     {
       if (i > 1)
         std::cout << ' ';
       std::cout << args[i];
     }
-    std::cout << '\n';
+    std::cout << "\n";
     return 0; });
 
   registerBuiltin("type", [this](const auto &args)
@@ -53,9 +53,9 @@ void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
 
 std::vector<std::string> Shell::tokenize(const std::string &line) const
 {
-  std::vector<std::string> parts;
-  std::string currentToken;
-  bool tokenStarted = false;
+  std::vector<std::string> parts{};
+  std::string currentToken{};
+  bool tokenStarted{false};
 
   enum class Mode
   {
@@ -64,19 +64,19 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
     Double
   };
 
-  Mode mode = Mode::None;
+  Mode mode{Mode::None};
 
-  auto pushToken = [&]()
+  auto pushToken{[&]()
   {
     if (tokenStarted)
       parts.push_back(currentToken);
     currentToken.clear();
     tokenStarted = false;
-  };
+  }};
 
   for (std::size_t i{}; i < line.size(); ++i)
   {
-    char c = line[i];
+    char c{line[i]};
 
     switch (mode)
     {
@@ -101,7 +101,7 @@ std::vector<std::string> Shell::tokenize(const std::string &line) const
       }
       if (c == '\\' && i + 1 < line.size())
       {
-        char next = line[i + 1];
+        char next{line[i + 1]};
         if (next == '"' || next == '\\' || next == '$' || next == '`')
         {
           currentToken.push_back(next);
@@ -157,15 +157,15 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   if (parts.empty())
     return 0;
 
-  OutputRedirection stdoutRedir;
-  OutputRedirection stderrRedir;
-  std::vector<std::string> args;
+  OutputRedirection stdoutRedir{};
+  OutputRedirection stderrRedir{};
+  std::vector<std::string> args{};
   args.reserve(parts.size());
-  for (std::size_t i = 0; i < parts.size(); ++i)
+  for (std::size_t i{}; i < parts.size(); ++i)
   {
-    const std::string &token = parts[i];
-    bool append = false;
-    OutputRedirection *target = nullptr;
+    const std::string &token{parts[i]};
+    bool append{false};
+    OutputRedirection *target{nullptr};
 
     if (token == ">" || token == "1>")
       target = &stdoutRedir;
@@ -188,7 +188,7 @@ int Shell::runCommand(const std::vector<std::string> &parts)
     {
       if (i + 1 >= parts.size())
       {
-        std::cerr << "syntax error: missing file for redirection" << std::endl;
+        std::cerr << "syntax error: missing file for redirection\n";
         return 1;
       }
       target->enabled = true;
@@ -204,16 +204,16 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   if (args.empty())
     return 0;
 
-  const auto cmd = commands.find(args[0]);
+  const auto cmd{commands.find(args[0])};
   if (cmd != commands.end())
   {
     if (!stdoutRedir.enabled && !stderrRedir.enabled)
       return cmd->second(args);
 
-    int savedStdout = -1;
-    int savedStderr = -1;
+    int savedStdout{-1};
+    int savedStderr{-1};
 
-    auto applyRedirection = [&](const OutputRedirection &redir, int targetFd, int &savedFd) -> bool
+    auto applyRedirection{[&](const OutputRedirection &redir, int targetFd, int &savedFd) -> bool
     {
       if (!redir.enabled)
         return true;
@@ -225,9 +225,9 @@ int Shell::runCommand(const std::vector<std::string> &parts)
         return false;
       }
 
-      int fd = open(redir.file.c_str(),
-                    O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
-                    0644);
+      int fd{open(redir.file.c_str(),
+                  O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+                  0644)};
       if (fd < 0)
       {
         perror("open");
@@ -246,9 +246,9 @@ int Shell::runCommand(const std::vector<std::string> &parts)
       }
       close(fd);
       return true;
-    };
+    }};
 
-    auto restoreFd = [&](int targetFd, int &savedFd)
+    auto restoreFd{[&](int targetFd, int &savedFd)
     {
       if (savedFd < 0)
         return;
@@ -256,7 +256,7 @@ int Shell::runCommand(const std::vector<std::string> &parts)
         perror("dup2");
       close(savedFd);
       savedFd = -1;
-    };
+    }};
 
     if (!applyRedirection(stdoutRedir, STDOUT_FILENO, savedStdout))
       return 1;
@@ -266,25 +266,26 @@ int Shell::runCommand(const std::vector<std::string> &parts)
       return 1;
     }
 
-    int rc = cmd->second(args);
+    int rc{cmd->second(args)};
     restoreFd(STDERR_FILENO, savedStderr);
     restoreFd(STDOUT_FILENO, savedStdout);
     return rc;
   }
 
-  if (auto path = findExecutable(args[0]))
+  auto path{findExecutable(args[0])};
+  if (path)
   {
-    std::string execPath = *path + '/' + args[0];
+    std::string execPath{*path + '/' + args[0]};
     return externalCommand(*path, args, stdoutRedir, stderrRedir);
   }
 
-  std::cerr << args[0] << ": command not found" << std::endl;
+  std::cerr << args[0] << ": command not found\n";
   return 127;
 }
 
 std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
 {
-  std::vector<char *> argv;
+  std::vector<char *> argv{};
   argv.reserve(parts.size() + 1);
   for (auto &s : parts)
     argv.push_back(const_cast<char *>(s.c_str()));
@@ -299,16 +300,16 @@ int Shell::externalCommand(const std::string &path,
                            const OutputRedirection &stderrRedir)
 {
 
-  pid_t pid = fork();
+  pid_t pid{fork()};
   if (pid == 0)
   {
-    std::vector<char *> argv = argvHelper(parts);
+    std::vector<char *> argv{argvHelper(parts)};
 
     if (stdoutRedir.enabled)
     {
-      int fd = open(stdoutRedir.file.c_str(),
-                    O_WRONLY | O_CREAT | (stdoutRedir.append ? O_APPEND : O_TRUNC),
-                    0644);
+      int fd{open(stdoutRedir.file.c_str(),
+                  O_WRONLY | O_CREAT | (stdoutRedir.append ? O_APPEND : O_TRUNC),
+                  0644)};
       if (fd < 0)
       {
         perror("open");
@@ -325,9 +326,9 @@ int Shell::externalCommand(const std::string &path,
 
     if (stderrRedir.enabled)
     {
-      int fd = open(stderrRedir.file.c_str(),
-                    O_WRONLY | O_CREAT | (stderrRedir.append ? O_APPEND : O_TRUNC),
-                    0644);
+      int fd{open(stderrRedir.file.c_str(),
+                  O_WRONLY | O_CREAT | (stderrRedir.append ? O_APPEND : O_TRUNC),
+                  0644)};
       if (fd < 0)
       {
         perror("open");
@@ -349,7 +350,7 @@ int Shell::externalCommand(const std::string &path,
   }
   else if (pid > 0)
   {
-    int status = 0;
+    int status{};
     waitpid(pid, &status, 0);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 127;
   }
@@ -365,23 +366,24 @@ int Shell::runType(const std::vector<std::string> &args) const
   if (args.size() < 2)
     return 0;
 
-  for (std::size_t i = 1; i < args.size(); ++i)
+  for (std::size_t i{1}; i < args.size(); ++i)
   {
-    const auto &name = args[i];
+    const auto &name{args[i]};
 
     if (commands.find(name) != commands.end())
     {
-      std::cout << name << " is a shell builtin" << std::endl;
+      std::cout << name << " is a shell builtin\n";
       continue;
     }
 
-    if (auto path = findExecutable(name))
+    auto path{findExecutable(name)};
+    if (path)
     {
-      std::cout << name << " is " << *path << std::endl;
+      std::cout << name << " is " << *path << "\n";
       continue;
     }
 
-    std::cout << name << ": not found" << std::endl;
+    std::cout << name << ": not found\n";
   }
 
   return 0;
@@ -389,31 +391,31 @@ int Shell::runType(const std::vector<std::string> &args) const
 
 int Shell::runPwd()
 {
-  if (const char *pwd = std::getenv("PWD"); pwd && *pwd)
+  if (const char *pwd{std::getenv("PWD")}; pwd && *pwd)
   {
-    std::cout << pwd << std::endl;
+    std::cout << pwd << "\n";
     return 0;
   }
 
-  if (auto pwd = getEnvValue("PWD"))
+  if (auto pwd{getEnvValue("PWD")}; pwd)
   {
-    std::cout << *pwd << std::endl;
+    std::cout << *pwd << "\n";
     return 0;
   }
 
-  std::cerr << "pwd: PWD not set" << std::endl;
+  std::cerr << "pwd: PWD not set\n";
   return 1;
 }
 
 int Shell::runCd(const std::vector<std::string> &args)
 {
-  std::string target;
+  std::string target{};
   if (args.size() < 2)
   {
-    const char *home = std::getenv("HOME");
+    const char *home{std::getenv("HOME")};
     if (!home || *home == '\0')
     {
-      std::cerr << "cd: HOME not set" << std::endl;
+      std::cerr << "cd: HOME not set\n";
       return 1;
     }
     target = home;
@@ -427,62 +429,62 @@ int Shell::runCd(const std::vector<std::string> &args)
   {
     if (target.size() == 1 || target[1] == '/')
     {
-      const char *home = std::getenv("HOME");
+      const char *home{std::getenv("HOME")};
       if (!home || *home == '\0')
       {
-        std::cerr << "cd: HOME not set" << std::endl;
+        std::cerr << "cd: HOME not set\n";
         return 1;
       }
-      target = std::string(home) + target.substr(1);
+      target = std::string{home} + target.substr(1);
     }
   }
 
-  std::optional<std::string> oldpwd = getCurrentDir();
-  if (!oldpwd)
-    oldpwd = getEnvValue("PWD");
+  std::optional<std::string> oldPwd{getCurrentDir()};
+  if (!oldPwd)
+    oldPwd = getEnvValue("PWD");
 
   if (chdir(target.c_str()) != 0)
   {
-    std::cerr << "cd: " << target << ": " << std::strerror(errno) << std::endl;
+    std::cerr << "cd: " << target << ": " << std::strerror(errno) << "\n";
     return 1;
   }
 
-  std::string newpwd;
-  if (auto cwd = getCurrentDir())
-    newpwd = *cwd;
+  std::string newPwd{};
+  if (auto cwd{getCurrentDir()}; cwd)
+    newPwd = *cwd;
   else
-    newpwd = target;
+    newPwd = target;
 
-  if (oldpwd)
-    setEnvValue("OLDPWD", *oldpwd);
-  setEnvValue("PWD", newpwd);
+  if (oldPwd)
+    setEnvValue("OLDPWD", *oldPwd);
+  setEnvValue("PWD", newPwd);
   return 0;
 }
 
 std::optional<std::string> Shell::findExecutable(const std::string &name) const
 {
-  const char *pathEnv = std::getenv("PATH");
+  const char *pathEnv{std::getenv("PATH")};
   if (!pathEnv || name.empty())
     return std::nullopt;
 
-  const std::string pathValue(pathEnv);
-  std::string segment;
+  const std::string pathValue{pathEnv};
+  std::string segment{};
 
-  auto checkSegment = [&](const std::string &dir) -> std::optional<std::string>
+  auto checkSegment{[&](const std::string &dir) -> std::optional<std::string>
   {
     if (dir.empty())
       return std::nullopt;
-    const std::filesystem::path candidate = std::filesystem::path(dir) / name;
+    const std::filesystem::path candidate{std::filesystem::path(dir) / name};
     if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
       return candidate.string();
     return std::nullopt;
-  };
+  }};
 
   for (char c : pathValue)
   {
     if (c == ':' || c == ';')
     {
-      if (auto found = checkSegment(segment))
+      if (auto found{checkSegment(segment)}; found)
         return found;
       segment.clear();
       continue;
@@ -490,7 +492,7 @@ std::optional<std::string> Shell::findExecutable(const std::string &name) const
     segment.push_back(c);
   }
 
-  if (auto found = checkSegment(segment))
+  if (auto found{checkSegment(segment)}; found)
     return found;
 
   return std::nullopt;
@@ -498,19 +500,19 @@ std::optional<std::string> Shell::findExecutable(const std::string &name) const
 
 bool Shell::isExecutable(const std::filesystem::path &path) const
 {
-  std::error_code ec;
-  const auto perms = std::filesystem::status(path, ec).permissions();
+  std::error_code ec{};
+  const auto perms{std::filesystem::status(path, ec).permissions()};
   if (ec)
     return false;
 
   using std::filesystem::perms;
-  const auto mask = perms::owner_exec | perms::group_exec | perms::others_exec;
+  const auto mask{perms::owner_exec | perms::group_exec | perms::others_exec};
   return (perms::none != (perms & mask));
 }
 
 std::optional<std::string> Shell::getEnvValue(const std::string &key) const
 {
-  const std::string prefix = key + "=";
+  const std::string prefix{key + "="};
   for (const auto &entry : envp)
   {
     if (entry.compare(0, prefix.size(), prefix) == 0)
@@ -521,7 +523,7 @@ std::optional<std::string> Shell::getEnvValue(const std::string &key) const
 
 void Shell::setEnvValue(const std::string &key, const std::string &value)
 {
-  const std::string prefix = key + "=";
+  const std::string prefix{key + "="};
   for (auto &entry : envp)
   {
     if (entry.compare(0, prefix.size(), prefix) == 0)
@@ -538,25 +540,25 @@ void Shell::setEnvValue(const std::string &key, const std::string &value)
 
 std::optional<std::string> Shell::getCurrentDir() const
 {
-  char *cwd = ::getcwd(nullptr, 0);
+  char *cwd{::getcwd(nullptr, 0)};
   if (!cwd)
     return std::nullopt;
 
-  std::string result(cwd);
+  std::string result{cwd};
   std::free(cwd);
   return result;
 }
 
 void Shell::run()
 {
-  std::string line;
+  std::string line{};
   while (true)
   {
     std::cout << "$ ";
     if (!std::getline(std::cin, line))
       break;
 
-    const auto parts = tokenize(line);
+    const auto parts{tokenize(line)};
     runCommand(parts);
   }
 }
