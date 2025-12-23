@@ -839,22 +839,70 @@ int Shell::runCd(const std::vector<std::string> &args)
 
 int Shell::runHistory(const std::vector<std::string> &args)
 {
-  if (args.size() > 1 && args[1] == "-r")
+  if (args.size() > 1)
   {
-    if (args.size() < 3)
+    const std::string &option{args[1]};
+    if (option == "-r")
     {
-      std::cerr << "history: -r: missing filename\n";
-      return 1;
+      if (args.size() < 3)
+      {
+        std::cerr << "history: -r: missing filename\n";
+        return 1;
+      }
+
+      const std::string &path{args[2]};
+      if (read_history(path.c_str()) != 0)
+      {
+        std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
+        return 1;
+      }
+      historyAppendedCount = history_length;
+      return 0;
     }
 
-    const std::string &path{args[2]};
-    if (read_history(path.c_str()) != 0)
+    if (option == "-c")
     {
-      std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
-      return 1;
+      clear_history();
+      historyAppendedCount = 0;
+      return 0;
     }
 
-    return 0;
+    if (option == "-w" || option == "-a")
+    {
+      if (args.size() < 3)
+      {
+        std::cerr << "history: " << option << ": missing filename\n";
+        return 1;
+      }
+
+      const std::string &path{args[2]};
+      if (option == "-w")
+      {
+        if (write_history(path.c_str()) != 0)
+        {
+          std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
+          return 1;
+        }
+        historyAppendedCount = history_length;
+        return 0;
+      }
+
+      int totalEntries{history_length};
+      if (totalEntries < historyAppendedCount)
+        historyAppendedCount = totalEntries;
+
+      int newEntries{totalEntries - historyAppendedCount};
+      if (newEntries <= 0)
+        return 0;
+
+      if (append_history(newEntries, path.c_str()) != 0)
+      {
+        std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
+        return 1;
+      }
+      historyAppendedCount = totalEntries;
+      return 0;
+    }
   }
 
   HIST_ENTRY **entries{history_list()};

@@ -48,6 +48,7 @@ private:
   std::size_t pendingCompletionPoint{0};
   static constexpr std::size_t completionQueryItems{100};
   std::string cachedPathValue{};
+  int historyAppendedCount{0};
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
   std::vector<std::string> tokenize(const std::string &line) const;
