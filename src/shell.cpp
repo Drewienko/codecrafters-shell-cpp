@@ -839,6 +839,24 @@ int Shell::runCd(const std::vector<std::string> &args)
 
 int Shell::runHistory(const std::vector<std::string> &args)
 {
+  if (args.size() > 1 && args[1] == "-r")
+  {
+    if (args.size() < 3)
+    {
+      std::cerr << "history: -r: missing filename\n";
+      return 1;
+    }
+
+    const std::string &path{args[2]};
+    if (read_history(path.c_str()) != 0)
+    {
+      std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
+      return 1;
+    }
+
+    return 0;
+  }
+
   HIST_ENTRY **entries{history_list()};
   if (!entries)
     return 0;
