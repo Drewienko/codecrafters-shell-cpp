@@ -49,6 +49,7 @@ private:
   static constexpr std::size_t completionQueryItems{100};
   std::string cachedPathValue{};
   int historyAppendedCount{0};
+  int mainPid{};
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
   std::vector<std::string> tokenize(const std::string &line) const;
@@ -64,6 +65,9 @@ private:
   int runPwd();
   int runCd(const std::vector<std::string> &args);
   int runHistory(const std::vector<std::string> &args);
+  void loadHistoryFromEnv();
+  void saveHistoryToEnv();
+  bool loadHistoryFromFile(const std::string &path);
   std::optional<std::string> getEnvValue(const std::string &key) const;
   void setEnvValue(const std::string &key, const std::string &value);
   std::optional<std::string> getCurrentDir() const;

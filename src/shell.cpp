@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <iomanip>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -16,6 +17,7 @@
 
 Shell::Shell(int argc, char *argv[], char **envp)
 {
+  mainPid = static_cast<int>(::getpid());
   this->argv.reserve(static_cast<std::size_t>(argc));
   for (int i{}; i < argc; ++i)
     this->argv.emplace_back(argv[i] ? argv[i] : "");
@@ -23,8 +25,12 @@ Shell::Shell(int argc, char *argv[], char **envp)
   for (char **env{envp}; env && *env; ++env)
     this->envp.emplace_back(*env);
 
-  registerBuiltin("exit", [](const auto &)
+  using_history();
+  loadHistoryFromEnv();
+
+  registerBuiltin("exit", [this](const auto &)
                   {
+    saveHistoryToEnv();
     std::exit(0);
     return 0; });
 
@@ -844,19 +850,27 @@ int Shell::runHistory(const std::vector<std::string> &args)
     const std::string &option{args[1]};
     if (option == "-r")
     {
-      if (args.size() < 3)
+      std::string path{};
+      if (args.size() >= 3)
+      {
+        path = args[2];
+      }
+      else if (const char *historyFile{std::getenv("HISTFILE")}; historyFile && *historyFile != '\0')
+      {
+        path = historyFile;
+      }
+      else
       {
         std::cerr << "history: -r: missing filename\n";
         return 1;
       }
 
-      const std::string &path{args[2]};
-      if (read_history(path.c_str()) != 0)
+      errno = 0;
+      if (!loadHistoryFromFile(path))
       {
         std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
         return 1;
       }
-      historyAppendedCount = history_length;
       return 0;
     }
 
@@ -869,13 +883,21 @@ int Shell::runHistory(const std::vector<std::string> &args)
 
     if (option == "-w" || option == "-a")
     {
-      if (args.size() < 3)
+      std::string path{};
+      if (args.size() >= 3)
+      {
+        path = args[2];
+      }
+      else if (const char *historyFile{std::getenv("HISTFILE")}; historyFile && *historyFile != '\0')
+      {
+        path = historyFile;
+      }
+      else
       {
         std::cerr << "history: " << option << ": missing filename\n";
         return 1;
       }
 
-      const std::string &path{args[2]};
       if (option == "-w")
       {
         if (write_history(path.c_str()) != 0)
@@ -940,6 +962,46 @@ int Shell::runHistory(const std::vector<std::string> &args)
   }
 
   return 0;
+}
+
+void Shell::loadHistoryFromEnv()
+{
+  const char *historyFile{std::getenv("HISTFILE")};
+  if (!historyFile || *historyFile == '\0')
+    return;
+
+  loadHistoryFromFile(historyFile);
+}
+
+void Shell::saveHistoryToEnv()
+{
+  if (static_cast<int>(::getpid()) != mainPid)
+    return;
+
+  const char *historyFile{std::getenv("HISTFILE")};
+  if (!historyFile || *historyFile == '\0')
+    return;
+
+  if (write_history(historyFile) == 0)
+    historyAppendedCount = history_length;
+}
+
+bool Shell::loadHistoryFromFile(const std::string &path)
+{
+  std::ifstream file{path};
+  if (!file.is_open())
+    return false;
+
+  std::string line{};
+  while (std::getline(file, line))
+  {
+    if (line.empty())
+      continue;
+    add_history(line.c_str());
+  }
+
+  historyAppendedCount = history_length;
+  return true;
 }
 
 std::optional<std::string> Shell::findExecutable(const std::string &name) const
@@ -1052,6 +1114,7 @@ void Shell::run()
         awaitingContinuation = false;
         continue;
       }
+      saveHistoryToEnv();
       break;
     }
 
