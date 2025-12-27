@@ -1,5 +1,6 @@
 #include "shell.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -7,23 +8,34 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
-#include <unistd.h>
-#include <sys/wait.h>
 #include <iostream>
+#include <iterator>
+#include <memory>
 #include <readline/history.h>
 #include <readline/readline.h>
+#include <sys/wait.h>
 #include <system_error>
+#include <unistd.h>
 #include <utility>
 
-Shell::Shell(int argc, char *argv[], char **envp)
+Shell::Shell(int argc, char *argvInput[], char **envpInput)
 {
   mainPid = static_cast<int>(::getpid());
   this->argv.reserve(static_cast<std::size_t>(argc));
-  for (int i{}; i < argc; ++i)
-    this->argv.emplace_back(argv[i] ? argv[i] : "");
+  std::transform(argvInput, argvInput + argc, std::back_inserter(this->argv),
+                 [](char *arg)
+                 { return std::string{arg ? arg : ""}; });
 
-  for (char **env{envp}; env && *env; ++env)
-    this->envp.emplace_back(*env);
+  if (envpInput)
+  {
+    char **envEnd{envpInput};
+    while (*envEnd)
+      ++envEnd;
+    this->envp.reserve(static_cast<std::size_t>(envEnd - envpInput));
+    std::transform(envpInput, envEnd, std::back_inserter(this->envp),
+                   [](char *entry)
+                   { return std::string{entry ? entry : ""}; });
+  }
 
   using_history();
   loadHistoryFromEnv();
@@ -306,7 +318,8 @@ void Shell::loadPathExecutables()
                        return;
 
                      std::error_code ec{};
-                     std::filesystem::directory_iterator it{dir, ec};
+                     const auto dirPath{sanitizePath(dir)};
+                     std::filesystem::directory_iterator it{dirPath, ec};
                      if (ec)
                        return;
 
@@ -443,7 +456,8 @@ int Shell::runSingleCommand(const ParsedCommand &command)
                               return false;
                             }
 
-                            int fd{open(redir.file.c_str(),
+                            const std::string targetPath{sanitizePath(redir.file).string()};
+                            int fd{open(targetPath.c_str(),
                                         O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
                                         0644)};
                             if (fd < 0)
@@ -552,7 +566,8 @@ int Shell::runPipeline(const std::vector<ParsedCommand> &commands)
                               if (!redir.enabled)
                                 return true;
 
-                              int fd{open(redir.file.c_str(),
+                              const std::string targetPath{sanitizePath(redir.file).string()};
+                              int fd{open(targetPath.c_str(),
                                           O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
                                           0644)};
                               if (fd < 0)
@@ -585,9 +600,9 @@ int Shell::runPipeline(const std::vector<ParsedCommand> &commands)
       auto path{findExecutable(commands[i].args[0])};
       if (path)
       {
-        std::vector<char *> argv{argvHelper(commands[i].args)};
+        std::vector<char *> execArgv{argvHelper(commands[i].args)};
         extern char **environ;
-        execve(path->c_str(), argv.data(), environ);
+        execve(path->c_str(), execArgv.data(), environ);
         perror("execve");
         _exit(127);
       }
@@ -667,13 +682,14 @@ int Shell::runCommand(const std::vector<std::string> &parts)
 
 std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
 {
-  std::vector<char *> argv{};
-  argv.reserve(parts.size() + 1);
-  for (auto &s : parts)
-    argv.push_back(const_cast<char *>(s.c_str()));
-  argv.push_back(nullptr);
+  std::vector<char *> execArgv{};
+  execArgv.reserve(parts.size() + 1);
+  std::transform(parts.begin(), parts.end(), std::back_inserter(execArgv),
+                 [](const std::string &part)
+                 { return const_cast<char *>(part.c_str()); });
+  execArgv.push_back(nullptr);
 
-  return argv;
+  return execArgv;
 }
 
 int Shell::externalCommand(const std::string &path,
@@ -685,11 +701,12 @@ int Shell::externalCommand(const std::string &path,
   pid_t pid{fork()};
   if (pid == 0)
   {
-    std::vector<char *> argv{argvHelper(parts)};
+    std::vector<char *> execArgv{argvHelper(parts)};
 
     if (stdoutRedir.enabled)
     {
-      int fd{open(stdoutRedir.file.c_str(),
+      const std::string targetPath{sanitizePath(stdoutRedir.file).string()};
+      int fd{open(targetPath.c_str(),
                   O_WRONLY | O_CREAT | (stdoutRedir.append ? O_APPEND : O_TRUNC),
                   0644)};
       if (fd < 0)
@@ -708,7 +725,8 @@ int Shell::externalCommand(const std::string &path,
 
     if (stderrRedir.enabled)
     {
-      int fd{open(stderrRedir.file.c_str(),
+      const std::string targetPath{sanitizePath(stderrRedir.file).string()};
+      int fd{open(targetPath.c_str(),
                   O_WRONLY | O_CREAT | (stderrRedir.append ? O_APPEND : O_TRUNC),
                   0644)};
       if (fd < 0)
@@ -726,7 +744,7 @@ int Shell::externalCommand(const std::string &path,
     }
 
     extern char **environ;
-    execve(path.c_str(), argv.data(), environ);
+    execve(path.c_str(), execArgv.data(), environ);
     perror("execve");
     _exit(127);
   }
@@ -825,7 +843,8 @@ int Shell::runCd(const std::vector<std::string> &args)
   if (!oldPwd)
     oldPwd = getEnvValue("PWD");
 
-  if (chdir(target.c_str()) != 0)
+  const std::string normalizedTarget{sanitizePath(target).string()};
+  if (chdir(normalizedTarget.c_str()) != 0)
   {
     std::cerr << "cd: " << target << ": " << std::strerror(errno) << "\n";
     return 1;
@@ -900,7 +919,8 @@ int Shell::runHistory(const std::vector<std::string> &args)
 
       if (option == "-w")
       {
-        if (write_history(path.c_str()) != 0)
+        const std::string normalizedPath{sanitizePath(path).string()};
+        if (write_history(normalizedPath.c_str()) != 0)
         {
           std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
           return 1;
@@ -917,7 +937,8 @@ int Shell::runHistory(const std::vector<std::string> &args)
       if (newEntries <= 0)
         return 0;
 
-      if (append_history(newEntries, path.c_str()) != 0)
+      const std::string normalizedPath{sanitizePath(path).string()};
+      if (append_history(newEntries, normalizedPath.c_str()) != 0)
       {
         std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
         return 1;
@@ -982,13 +1003,14 @@ void Shell::saveHistoryToEnv()
   if (!historyFile || *historyFile == '\0')
     return;
 
-  if (write_history(historyFile) == 0)
+  const std::string normalizedPath{sanitizePath(std::string{historyFile}).string()};
+  if (write_history(normalizedPath.c_str()) == 0)
     historyAppendedCount = history_length;
 }
 
 bool Shell::loadHistoryFromFile(const std::string &path)
 {
-  std::ifstream file{path};
+  std::ifstream file{sanitizePath(path)};
   if (!file.is_open())
     return false;
 
@@ -1004,6 +1026,12 @@ bool Shell::loadHistoryFromFile(const std::string &path)
   return true;
 }
 
+std::filesystem::path Shell::sanitizePath(const std::string &path) const
+{
+  // Shell intentionally accepts user-provided paths; normalize to reduce traversal artifacts.
+  return std::filesystem::path{path}.lexically_normal();
+}
+
 std::optional<std::string> Shell::findExecutable(const std::string &name) const
 {
   const char *pathEnv{std::getenv("PATH")};
@@ -1017,7 +1045,7 @@ std::optional<std::string> Shell::findExecutable(const std::string &name) const
                     {
                       if (dir.empty())
                         return std::nullopt;
-                      const std::filesystem::path candidate{std::filesystem::path(dir) / name};
+                      const std::filesystem::path candidate{sanitizePath(dir) / name};
                       if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
                         return candidate.string();
                       return std::nullopt;
@@ -1056,25 +1084,25 @@ bool Shell::isExecutable(const std::filesystem::path &path) const
 std::optional<std::string> Shell::getEnvValue(const std::string &key) const
 {
   const std::string prefix{key + "="};
-  for (const auto &entry : envp)
-  {
-    if (entry.compare(0, prefix.size(), prefix) == 0)
-      return entry.substr(prefix.size());
-  }
+  auto it{std::find_if(envp.begin(), envp.end(),
+                       [&prefix](const std::string &entry)
+                       { return entry.compare(0, prefix.size(), prefix) == 0; })};
+  if (it != envp.end())
+    return it->substr(prefix.size());
   return std::nullopt;
 }
 
 void Shell::setEnvValue(const std::string &key, const std::string &value)
 {
   const std::string prefix{key + "="};
-  for (auto &entry : envp)
+  auto it{std::find_if(envp.begin(), envp.end(),
+                       [&prefix](const std::string &entry)
+                       { return entry.compare(0, prefix.size(), prefix) == 0; })};
+  if (it != envp.end())
   {
-    if (entry.compare(0, prefix.size(), prefix) == 0)
-    {
-      entry = prefix + value;
-      setenv(key.c_str(), value.c_str(), 1);
-      return;
-    }
+    *it = prefix + value;
+    setenv(key.c_str(), value.c_str(), 1);
+    return;
   }
 
   envp.push_back(prefix + value);
@@ -1083,12 +1111,11 @@ void Shell::setEnvValue(const std::string &key, const std::string &value)
 
 std::optional<std::string> Shell::getCurrentDir() const
 {
-  char *cwd{::getcwd(nullptr, 0)};
+  std::unique_ptr<char, decltype(&std::free)> cwd{::getcwd(nullptr, 0), &std::free};
   if (!cwd)
     return std::nullopt;
 
-  std::string result{cwd};
-  std::free(cwd);
+  std::string result{cwd.get()};
   return result;
 }
 
@@ -1104,7 +1131,7 @@ void Shell::run()
   while (true)
   {
     const char *prompt{awaitingContinuation ? "> " : "$ "};
-    char *input{readline(prompt)};
+    std::unique_ptr<char, decltype(&std::free)> input{readline(prompt), &std::free};
     if (!input)
     {
       if (awaitingContinuation)
@@ -1118,8 +1145,7 @@ void Shell::run()
       break;
     }
 
-    std::string line{input};
-    std::free(input);
+    std::string line{input.get()};
 
     if (!buffer.empty())
       buffer.push_back('\n');

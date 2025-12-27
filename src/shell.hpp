@@ -12,7 +12,7 @@
 class Shell
 {
 public:
-  Shell(int argc, char *argv[], char **envp);
+  Shell(int argc, char *argvInput[], char **envpInput);
   void run();
   std::vector<std::string> argv, envp;
 
@@ -68,6 +68,7 @@ private:
   void loadHistoryFromEnv();
   void saveHistoryToEnv();
   bool loadHistoryFromFile(const std::string &path);
+  std::filesystem::path sanitizePath(const std::string &path) const;
   std::optional<std::string> getEnvValue(const std::string &key) const;
   void setEnvValue(const std::string &key, const std::string &value);
   std::optional<std::string> getCurrentDir() const;
