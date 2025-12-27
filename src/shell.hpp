@@ -1,80 +1,63 @@
 #pragma once
 
-#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "trie.hpp"
+#include "command.hpp"
+#include "completion_engine.hpp"
+#include "history_manager.hpp"
+#include "pipeline_executor.hpp"
+#include "path_resolver.hpp"
+#include "tokenizer.hpp"
 
 class Shell
 {
 public:
   Shell(int argc, char *argvInput[], char **envpInput);
   void run();
-  std::vector<std::string> argv, envp;
 
   ~Shell() = default;
-  Shell(const Shell &) = default;
-  Shell &operator=(const Shell &) = default;
-  Shell(Shell &&) noexcept = default;
-  Shell &operator=(Shell &&) noexcept = default;
+  Shell(const Shell &) = delete;
+  Shell &operator=(const Shell &) = delete;
+  Shell(Shell &&) noexcept = delete;
+  Shell &operator=(Shell &&) noexcept = delete;
 
 private:
-  struct OutputRedirection
-  {
-    bool enabled{false};
-    bool append{false};
-    std::string file{};
-  };
-
-  struct ParsedCommand
-  {
-    std::vector<std::string> args{};
-    OutputRedirection stdoutRedir{};
-    OutputRedirection stderrRedir{};
-  };
-
-  static inline Shell *activeShell{nullptr};
-
   using CommandHandler = std::function<int(const std::vector<std::string> &)>;
 
+  std::vector<std::string> argv{};
+  std::vector<std::string> envp{};
   std::unordered_map<std::string, CommandHandler> commands;
-  Trie completionTrie{};
-  bool pendingCompletionList{false};
-  std::string pendingCompletionLine{};
-  std::size_t pendingCompletionPoint{0};
-  static constexpr std::size_t completionQueryItems{100};
-  std::string cachedPathValue{};
-  int historyAppendedCount{0};
-  int mainPid{};
+  PathResolver pathResolver{};
+  CompletionEngine completionEngine;
+  PipelineExecutor pipelineExecutor{};
+  Tokenizer tokenizer{};
+  HistoryManager historyManager;
 
   void registerBuiltin(const std::string &name, CommandHandler handler);
-  std::vector<std::string> tokenize(const std::string &line) const;
-  static int handleTab(int count, int key);
   int runCommand(const std::vector<std::string> &parts);
-  void loadPathExecutables();
-  void resetCompletionState();
   bool parseCommandTokens(const std::vector<std::string> &parts, ParsedCommand &command, bool allowEmpty);
   std::vector<std::vector<std::string>> splitPipeline(const std::vector<std::string> &parts) const;
-  int runSingleCommand(const ParsedCommand &command);
+  int executeCommand(const ParsedCommand &command, ExecMode mode);
   int runPipeline(const std::vector<ParsedCommand> &commands);
-  int runType(const std::vector<std::string> &args) const;
+  int runType(const std::vector<std::string> &args);
   int runPwd();
   int runCd(const std::vector<std::string> &args);
-  int runHistory(const std::vector<std::string> &args);
-  void loadHistoryFromEnv();
-  void saveHistoryToEnv();
-  bool loadHistoryFromFile(const std::string &path);
-  std::filesystem::path sanitizePath(const std::string &path) const;
+  int openRedirectionFile(const OutputRedirection &redir) const;
+  bool applyRedirection(const OutputRedirection &redir, int targetFd, int *savedFd);
+  void restoreFd(int targetFd, int &savedFd);
   std::optional<std::string> getEnvValue(const std::string &key) const;
   void setEnvValue(const std::string &key, const std::string &value);
   std::optional<std::string> getCurrentDir() const;
-  std::optional<std::string> findExecutable(const std::string &name) const;
-  bool isExecutable(const std::filesystem::path &path) const;
+  std::optional<std::string> findExecutable(const std::string &name);
   std::vector<char *> argvHelper(const std::vector<std::string> &parts);
+  int execExternal(const std::string &path,
+                   const std::vector<std::string> &parts,
+                   const OutputRedirection &stdoutRedir,
+                   const OutputRedirection &stderrRedir);
   int externalCommand(const std::string &path,
                       const std::vector<std::string> &parts,
                       const OutputRedirection &stdoutRedir,

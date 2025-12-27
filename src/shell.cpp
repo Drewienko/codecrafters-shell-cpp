@@ -2,25 +2,23 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
-#include <readline/history.h>
 #include <readline/readline.h>
 #include <sys/wait.h>
-#include <system_error>
 #include <unistd.h>
 #include <utility>
 
+#include "fd_utils.hpp"
+#include "path_utils.hpp"
+
 Shell::Shell(int argc, char *argvInput[], char **envpInput)
+    : historyManager{static_cast<int>(::getpid())}
 {
-  mainPid = static_cast<int>(::getpid());
   this->argv.reserve(static_cast<std::size_t>(argc));
   std::transform(argvInput, argvInput + argc, std::back_inserter(this->argv),
                  [](char *arg)
@@ -37,12 +35,11 @@ Shell::Shell(int argc, char *argvInput[], char **envpInput)
                    { return std::string{entry ? entry : ""}; });
   }
 
-  using_history();
-  loadHistoryFromEnv();
+  historyManager.loadFromEnv();
 
   registerBuiltin("exit", [this](const auto &)
                   {
-    saveHistoryToEnv();
+    historyManager.saveToEnv();
     std::exit(0);
     return 0; });
 
@@ -67,296 +64,73 @@ Shell::Shell(int argc, char *argvInput[], char **envpInput)
                   { return runCd(args); });
 
   registerBuiltin("history", [this](const auto &args)
-                  { return runHistory(args); });
+                  { return historyManager.runHistory(args); });
 
-  loadPathExecutables();
+  completionEngine.refreshExecutables();
 }
 
 void Shell::registerBuiltin(const std::string &name, CommandHandler handler)
 {
   commands[name] = std::move(handler);
-  completionTrie.insert(name, Trie::NodeKind::Builtin);
+  completionEngine.registerBuiltin(name);
 }
 
-std::vector<std::string> Shell::tokenize(const std::string &line) const
+int Shell::openRedirectionFile(const OutputRedirection &redir) const
 {
-  std::vector<std::string> parts{};
-  std::string currentToken{};
-  bool tokenStarted{false};
-
-  enum class Mode
-  {
-    None,
-    Single,
-    Double
-  };
-
-  Mode mode{Mode::None};
-
-  auto pushToken{[&]()
-                 {
-                   if (tokenStarted)
-                     parts.push_back(currentToken);
-                   currentToken.clear();
-                   tokenStarted = false;
-                 }};
-
-  for (std::size_t i{}; i < line.size(); ++i)
-  {
-    char c{line[i]};
-
-    switch (mode)
-    {
-    case Mode::Single:
-      if (c == '\'')
-      {
-        mode = Mode::None;
-        tokenStarted = true;
-      }
-      else
-      {
-        currentToken.push_back(c);
-        tokenStarted = true;
-      }
-      break;
-    case Mode::Double:
-      if (c == '"')
-      {
-        mode = Mode::None;
-        tokenStarted = true;
-        break;
-      }
-      if (c == '\\' && i + 1 < line.size())
-      {
-        char next{line[i + 1]};
-        if (next == '"' || next == '\\' || next == '$' || next == '`')
-        {
-          currentToken.push_back(next);
-          ++i;
-        }
-        else
-        {
-          currentToken.push_back(c);
-        }
-        tokenStarted = true;
-        break;
-      }
-      currentToken.push_back(c);
-      tokenStarted = true;
-      break;
-    case Mode::None:
-      if (c == '|')
-      {
-        pushToken();
-        parts.push_back("|");
-        break;
-      }
-      if (std::isspace(static_cast<unsigned char>(c)))
-      {
-        pushToken();
-        break;
-      }
-      if (c == '\'')
-      {
-        mode = Mode::Single;
-        tokenStarted = true;
-        break;
-      }
-      if (c == '"')
-      {
-        mode = Mode::Double;
-        tokenStarted = true;
-        break;
-      }
-      if (c == '\\' && i + 1 < line.size())
-      {
-        currentToken.push_back(line[i + 1]);
-        ++i;
-        tokenStarted = true;
-        break;
-      }
-      currentToken.push_back(c);
-      tokenStarted = true;
-      break;
-    }
-  }
-
-  pushToken();
-  return parts;
+  const std::string targetPath{normalizePath(redir.file).string()};
+  return open(targetPath.c_str(),
+              O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
+              0644);
 }
 
-int Shell::handleTab(int, int)
+bool Shell::applyRedirection(const OutputRedirection &redir, int targetFd, int *savedFd)
 {
-  if (!activeShell)
-    return 0;
+  if (!redir.enabled)
+    return true;
 
-  Shell *shell{activeShell};
-  const char *buffer{rl_line_buffer};
-  if (!buffer)
-    return 0;
-
-  std::string line{buffer};
-  std::size_t point{static_cast<std::size_t>(rl_point)};
-  if (point > line.size())
-    point = line.size();
-
-  std::size_t start{point};
-  while (start > 0 && !std::isspace(static_cast<unsigned char>(line[start - 1])))
-    --start;
-
-  if (start != 0)
+  if (savedFd)
   {
-    shell->resetCompletionState();
-    return 0;
-  }
-
-  std::string prefix{line.substr(0, point)};
-  if (prefix.empty())
-  {
-    shell->resetCompletionState();
-    return 0;
-  }
-
-  shell->loadPathExecutables();
-  auto matches{shell->completionTrie.collectWithPrefix(prefix)};
-  if (matches.empty())
-  {
-    shell->resetCompletionState();
-    ::write(STDOUT_FILENO, "\x07", 1);
-    return 0;
-  }
-
-  if (matches.size() == 1)
-  {
-    shell->resetCompletionState();
-    const std::string &full{matches.front()};
-    if (full.size() > prefix.size())
+    *savedFd = dup(targetFd);
+    if (*savedFd < 0)
     {
-      std::string suffix{full.substr(prefix.size())};
-      suffix.push_back(' ');
-      rl_insert_text(suffix.c_str());
+      perror("dup");
+      return false;
     }
-    else
-    {
-      rl_insert_text(" ");
-    }
-    rl_redisplay();
-    ::write(STDOUT_FILENO, "\x07", 1);
-    return 0;
   }
 
-  std::string lcp{shell->completionTrie.longestCommonPrefix(prefix)};
-  if (lcp.size() > prefix.size())
+  UniqueFd fileFd{openRedirectionFile(redir)};
+  if (!fileFd)
   {
-    shell->resetCompletionState();
-    std::string suffix{lcp.substr(prefix.size())};
-    rl_insert_text(suffix.c_str());
-    ::write(STDOUT_FILENO, "\x07", 1);
-    rl_redisplay();
-
-    ::write(STDOUT_FILENO, "\x07", 1);
-    return 0;
+    perror("open");
+    if (savedFd)
+    {
+      close(*savedFd);
+      *savedFd = -1;
+    }
+    return false;
   }
 
-  if (shell->pendingCompletionList && shell->pendingCompletionLine == line && shell->pendingCompletionPoint == point)
+  if (dup2(fileFd.get(), targetFd) < 0)
   {
-    shell->resetCompletionState();
-    std::cout << "\n";
-    bool shouldList{true};
-    if (matches.size() > completionQueryItems)
+    perror("dup2");
+    if (savedFd)
     {
-      std::cout << "Display all " << matches.size() << " possibilities? (y or n)\n";
-      std::cout.flush();
-      int choice{rl_read_key()};
-      if (choice != 'y' && choice != 'Y')
-        shouldList = false;
+      close(*savedFd);
+      *savedFd = -1;
     }
-
-    if (shouldList)
-    {
-      for (std::size_t i{}; i < matches.size(); ++i)
-      {
-        if (i > 0)
-          std::cout << "  ";
-        std::cout << matches[i];
-      }
-      std::cout << "\n";
-    }
-
-    rl_on_new_line();
-    rl_redisplay();
-
-    ::write(STDOUT_FILENO, "\x07", 1);
-    return 0;
+    return false;
   }
-  ::write(STDOUT_FILENO, "\x07", 1);
-  shell->pendingCompletionList = true;
-  shell->pendingCompletionLine = line;
-  shell->pendingCompletionPoint = point;
-  return 0;
+  return true;
 }
 
-void Shell::loadPathExecutables()
+void Shell::restoreFd(int targetFd, int &savedFd)
 {
-  const char *pathEnv{std::getenv("PATH")};
-  if (!pathEnv)
+  if (savedFd < 0)
     return;
-  const std::string pathValue{pathEnv};
-  if (pathValue == cachedPathValue)
-    return;
-
-  cachedPathValue = pathValue;
-  completionTrie.clear();
-  for (const auto &entry : commands)
-    completionTrie.insert(entry.first, Trie::NodeKind::Builtin);
-
-  std::string segment{};
-
-  auto loadSegment{[&](const std::string &dir)
-                   {
-                     if (dir.empty())
-                       return;
-
-                     std::error_code ec{};
-                     const auto dirPath{sanitizePath(dir)};
-                     std::filesystem::directory_iterator it{dirPath, ec};
-                     if (ec)
-                       return;
-
-                     for (const auto &entry : it)
-                     {
-                       if (!entry.is_regular_file(ec))
-                       {
-                         if (ec)
-                           ec.clear();
-                         continue;
-                       }
-
-                       const auto &path{entry.path()};
-                       if (isExecutable(path))
-                         completionTrie.insert(path.filename().string(), Trie::NodeKind::PathExecutable);
-                     }
-                   }};
-
-  for (char c : pathValue)
-  {
-    if (c == ':' || c == ';')
-    {
-      loadSegment(segment);
-      segment.clear();
-      continue;
-    }
-    segment.push_back(c);
-  }
-
-  loadSegment(segment);
-}
-
-void Shell::resetCompletionState()
-{
-  pendingCompletionList = false;
-  pendingCompletionLine.clear();
-  pendingCompletionPoint = 0;
+  if (dup2(savedFd, targetFd) < 0)
+    perror("dup2");
+  close(savedFd);
+  savedFd = -1;
 }
 
 bool Shell::parseCommandTokens(const std::vector<std::string> &parts, ParsedCommand &command, bool allowEmpty)
@@ -430,7 +204,7 @@ std::vector<std::vector<std::string>> Shell::splitPipeline(const std::vector<std
   return segments;
 }
 
-int Shell::runSingleCommand(const ParsedCommand &command)
+int Shell::executeCommand(const ParsedCommand &command, ExecMode mode)
 {
   if (command.args.empty())
     return 0;
@@ -438,76 +212,38 @@ int Shell::runSingleCommand(const ParsedCommand &command)
   const auto cmd{commands.find(command.args[0])};
   if (cmd != commands.end())
   {
-    if (!command.stdoutRedir.enabled && !command.stderrRedir.enabled)
+    if (mode == ExecMode::Parent && !command.stdoutRedir.enabled && !command.stderrRedir.enabled)
       return cmd->second(command.args);
 
     int savedStdout{-1};
     int savedStderr{-1};
+    int *savedStdoutPtr{mode == ExecMode::Parent ? &savedStdout : nullptr};
+    int *savedStderrPtr{mode == ExecMode::Parent ? &savedStderr : nullptr};
 
-    auto applyRedirection{[&](const OutputRedirection &redir, int targetFd, int &savedFd) -> bool
-                          {
-                            if (!redir.enabled)
-                              return true;
-
-                            savedFd = dup(targetFd);
-                            if (savedFd < 0)
-                            {
-                              perror("dup");
-                              return false;
-                            }
-
-                            const std::string targetPath{sanitizePath(redir.file).string()};
-                            int fd{open(targetPath.c_str(),
-                                        O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
-                                        0644)};
-                            if (fd < 0)
-                            {
-                              perror("open");
-                              close(savedFd);
-                              savedFd = -1;
-                              return false;
-                            }
-
-                            if (dup2(fd, targetFd) < 0)
-                            {
-                              perror("dup2");
-                              close(fd);
-                              close(savedFd);
-                              savedFd = -1;
-                              return false;
-                            }
-                            close(fd);
-                            return true;
-                          }};
-
-    auto restoreFd{[&](int targetFd, int &savedFd)
-                   {
-                     if (savedFd < 0)
-                       return;
-                     if (dup2(savedFd, targetFd) < 0)
-                       perror("dup2");
-                     close(savedFd);
-                     savedFd = -1;
-                   }};
-
-    if (!applyRedirection(command.stdoutRedir, STDOUT_FILENO, savedStdout))
+    if (!applyRedirection(command.stdoutRedir, STDOUT_FILENO, savedStdoutPtr))
       return 1;
-    if (!applyRedirection(command.stderrRedir, STDERR_FILENO, savedStderr))
+    if (!applyRedirection(command.stderrRedir, STDERR_FILENO, savedStderrPtr))
     {
-      restoreFd(STDOUT_FILENO, savedStdout);
+      if (mode == ExecMode::Parent)
+        restoreFd(STDOUT_FILENO, savedStdout);
       return 1;
     }
 
     int rc{cmd->second(command.args)};
-    restoreFd(STDERR_FILENO, savedStderr);
-    restoreFd(STDOUT_FILENO, savedStdout);
+    if (mode == ExecMode::Parent)
+    {
+      restoreFd(STDERR_FILENO, savedStderr);
+      restoreFd(STDOUT_FILENO, savedStdout);
+    }
     return rc;
   }
 
   auto path{findExecutable(command.args[0])};
   if (path)
   {
-    return externalCommand(*path, command.args, command.stdoutRedir, command.stderrRedir);
+    if (mode == ExecMode::Parent)
+      return externalCommand(*path, command.args, command.stdoutRedir, command.stderrRedir);
+    return execExternal(*path, command.args, command.stdoutRedir, command.stderrRedir);
   }
 
   std::cerr << command.args[0] << ": command not found\n";
@@ -516,142 +252,9 @@ int Shell::runSingleCommand(const ParsedCommand &command)
 
 int Shell::runPipeline(const std::vector<ParsedCommand> &commands)
 {
-  if (commands.empty())
-    return 0;
-
-  std::vector<pid_t> pids{};
-  pids.reserve(commands.size());
-
-  int prevReadFd{-1};
-  for (std::size_t i{}; i < commands.size(); ++i)
-  {
-    int pipeFd[2]{-1, -1};
-    const bool hasNext{i + 1 < commands.size()};
-    if (hasNext && pipe(pipeFd) != 0)
-    {
-      perror("pipe");
-      if (prevReadFd != -1)
-        close(prevReadFd);
-      return 1;
-    }
-
-    pid_t pid{fork()};
-    if (pid == 0)
-    {
-      if (prevReadFd != -1 && dup2(prevReadFd, STDIN_FILENO) < 0)
-      {
-        perror("dup2");
-        _exit(127);
-      }
-
-      if (hasNext && !commands[i].stdoutRedir.enabled)
-      {
-        if (dup2(pipeFd[1], STDOUT_FILENO) < 0)
-        {
-          perror("dup2");
-          _exit(127);
-        }
-      }
-
-      if (prevReadFd != -1)
-        close(prevReadFd);
-      if (hasNext)
-      {
-        close(pipeFd[0]);
-        close(pipeFd[1]);
-      }
-
-      auto applyRedirection{[&](const OutputRedirection &redir, int targetFd)
-                            {
-                              if (!redir.enabled)
-                                return true;
-
-                              const std::string targetPath{sanitizePath(redir.file).string()};
-                              int fd{open(targetPath.c_str(),
-                                          O_WRONLY | O_CREAT | (redir.append ? O_APPEND : O_TRUNC),
-                                          0644)};
-                              if (fd < 0)
-                              {
-                                perror("open");
-                                return false;
-                              }
-                              if (dup2(fd, targetFd) < 0)
-                              {
-                                perror("dup2");
-                                close(fd);
-                                return false;
-                              }
-                              close(fd);
-                              return true;
-                            }};
-
-      if (!applyRedirection(commands[i].stdoutRedir, STDOUT_FILENO))
-        _exit(127);
-      if (!applyRedirection(commands[i].stderrRedir, STDERR_FILENO))
-        _exit(127);
-
-      const auto cmd{this->commands.find(commands[i].args[0])};
-      if (cmd != this->commands.end())
-      {
-        int rc{cmd->second(commands[i].args)};
-        _exit(rc);
-      }
-
-      auto path{findExecutable(commands[i].args[0])};
-      if (path)
-      {
-        std::vector<char *> execArgv{argvHelper(commands[i].args)};
-        extern char **environ;
-        execve(path->c_str(), execArgv.data(), environ);
-        perror("execve");
-        _exit(127);
-      }
-
-      std::cerr << commands[i].args[0] << ": command not found\n";
-      _exit(127);
-    }
-    else if (pid > 0)
-    {
-      pids.push_back(pid);
-      if (prevReadFd != -1)
-        close(prevReadFd);
-      if (hasNext)
-      {
-        close(pipeFd[1]);
-        prevReadFd = pipeFd[0];
-      }
-      else
-      {
-        prevReadFd = -1;
-      }
-    }
-    else
-    {
-      perror("fork");
-      if (prevReadFd != -1)
-        close(prevReadFd);
-      if (hasNext)
-      {
-        close(pipeFd[0]);
-        close(pipeFd[1]);
-      }
-      return 127;
-    }
-  }
-
-  if (prevReadFd != -1)
-    close(prevReadFd);
-
-  int lastStatus{0};
-  for (std::size_t i{}; i < pids.size(); ++i)
-  {
-    int status{};
-    waitpid(pids[i], &status, 0);
-    if (i + 1 == pids.size())
-      lastStatus = status;
-  }
-
-  return WIFEXITED(lastStatus) ? WEXITSTATUS(lastStatus) : 127;
+  return pipelineExecutor.run(commands,
+                              [this](const ParsedCommand &command, ExecMode mode)
+                              { return executeCommand(command, mode); });
 }
 
 int Shell::runCommand(const std::vector<std::string> &parts)
@@ -677,7 +280,7 @@ int Shell::runCommand(const std::vector<std::string> &parts)
   ParsedCommand command{};
   if (!parseCommandTokens(parts, command, true))
     return 1;
-  return runSingleCommand(command);
+  return executeCommand(command, ExecMode::Parent);
 }
 
 std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
@@ -692,6 +295,23 @@ std::vector<char *> Shell::argvHelper(const std::vector<std::string> &parts)
   return execArgv;
 }
 
+int Shell::execExternal(const std::string &path,
+                        const std::vector<std::string> &parts,
+                        const OutputRedirection &stdoutRedir,
+                        const OutputRedirection &stderrRedir)
+{
+  if (!applyRedirection(stdoutRedir, STDOUT_FILENO, nullptr))
+    return 127;
+  if (!applyRedirection(stderrRedir, STDERR_FILENO, nullptr))
+    return 127;
+
+  std::vector<char *> execArgv{argvHelper(parts)};
+  extern char **environ;
+  execve(path.c_str(), execArgv.data(), environ);
+  perror("execve");
+  return 127;
+}
+
 int Shell::externalCommand(const std::string &path,
                            const std::vector<std::string> &parts,
                            const OutputRedirection &stdoutRedir,
@@ -701,52 +321,8 @@ int Shell::externalCommand(const std::string &path,
   pid_t pid{fork()};
   if (pid == 0)
   {
-    std::vector<char *> execArgv{argvHelper(parts)};
-
-    if (stdoutRedir.enabled)
-    {
-      const std::string targetPath{sanitizePath(stdoutRedir.file).string()};
-      int fd{open(targetPath.c_str(),
-                  O_WRONLY | O_CREAT | (stdoutRedir.append ? O_APPEND : O_TRUNC),
-                  0644)};
-      if (fd < 0)
-      {
-        perror("open");
-        _exit(127);
-      }
-      if (dup2(fd, STDOUT_FILENO) < 0)
-      {
-        perror("dup2");
-        close(fd);
-        _exit(127);
-      }
-      close(fd);
-    }
-
-    if (stderrRedir.enabled)
-    {
-      const std::string targetPath{sanitizePath(stderrRedir.file).string()};
-      int fd{open(targetPath.c_str(),
-                  O_WRONLY | O_CREAT | (stderrRedir.append ? O_APPEND : O_TRUNC),
-                  0644)};
-      if (fd < 0)
-      {
-        perror("open");
-        _exit(127);
-      }
-      if (dup2(fd, STDERR_FILENO) < 0)
-      {
-        perror("dup2");
-        close(fd);
-        _exit(127);
-      }
-      close(fd);
-    }
-
-    extern char **environ;
-    execve(path.c_str(), execArgv.data(), environ);
-    perror("execve");
-    _exit(127);
+    int rc{execExternal(path, parts, stdoutRedir, stderrRedir)};
+    _exit(rc);
   }
   else if (pid > 0)
   {
@@ -761,7 +337,7 @@ int Shell::externalCommand(const std::string &path,
   }
 }
 
-int Shell::runType(const std::vector<std::string> &args) const
+int Shell::runType(const std::vector<std::string> &args)
 {
   if (args.size() < 2)
     return 0;
@@ -843,7 +419,7 @@ int Shell::runCd(const std::vector<std::string> &args)
   if (!oldPwd)
     oldPwd = getEnvValue("PWD");
 
-  const std::string normalizedTarget{sanitizePath(target).string()};
+  const std::string normalizedTarget{normalizePath(target).string()};
   if (chdir(normalizedTarget.c_str()) != 0)
   {
     std::cerr << "cd: " << target << ": " << std::strerror(errno) << "\n";
@@ -862,223 +438,10 @@ int Shell::runCd(const std::vector<std::string> &args)
   return 0;
 }
 
-int Shell::runHistory(const std::vector<std::string> &args)
+std::optional<std::string> Shell::findExecutable(const std::string &name)
 {
-  if (args.size() > 1)
-  {
-    const std::string &option{args[1]};
-    if (option == "-r")
-    {
-      std::string path{};
-      if (args.size() >= 3)
-      {
-        path = args[2];
-      }
-      else if (const char *historyFile{std::getenv("HISTFILE")}; historyFile && *historyFile != '\0')
-      {
-        path = historyFile;
-      }
-      else
-      {
-        std::cerr << "history: -r: missing filename\n";
-        return 1;
-      }
-
-      errno = 0;
-      if (!loadHistoryFromFile(path))
-      {
-        std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
-        return 1;
-      }
-      return 0;
-    }
-
-    if (option == "-c")
-    {
-      clear_history();
-      historyAppendedCount = 0;
-      return 0;
-    }
-
-    if (option == "-w" || option == "-a")
-    {
-      std::string path{};
-      if (args.size() >= 3)
-      {
-        path = args[2];
-      }
-      else if (const char *historyFile{std::getenv("HISTFILE")}; historyFile && *historyFile != '\0')
-      {
-        path = historyFile;
-      }
-      else
-      {
-        std::cerr << "history: " << option << ": missing filename\n";
-        return 1;
-      }
-
-      if (option == "-w")
-      {
-        const std::string normalizedPath{sanitizePath(path).string()};
-        if (write_history(normalizedPath.c_str()) != 0)
-        {
-          std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
-          return 1;
-        }
-        historyAppendedCount = history_length;
-        return 0;
-      }
-
-      int totalEntries{history_length};
-      if (totalEntries < historyAppendedCount)
-        historyAppendedCount = totalEntries;
-
-      int newEntries{totalEntries - historyAppendedCount};
-      if (newEntries <= 0)
-        return 0;
-
-      const std::string normalizedPath{sanitizePath(path).string()};
-      if (append_history(newEntries, normalizedPath.c_str()) != 0)
-      {
-        std::cerr << "history: " << path << ": " << std::strerror(errno) << "\n";
-        return 1;
-      }
-      historyAppendedCount = totalEntries;
-      return 0;
-    }
-  }
-
-  HIST_ENTRY **entries{history_list()};
-  if (!entries)
-    return 0;
-
-  int entryCount{};
-  while (entries[entryCount])
-    ++entryCount;
-
-  int limit{-1};
-  if (args.size() > 1)
-  {
-    try
-    {
-      std::size_t consumed{};
-      int requested{std::stoi(args[1], &consumed)};
-      if (consumed == args[1].size() && requested >= 0)
-        limit = requested;
-    }
-    catch (const std::exception &)
-    {
-    }
-  }
-
-  int startIndex{};
-  if (limit >= 0 && limit < entryCount)
-    startIndex = entryCount - limit;
-
-  for (int i{startIndex}; i < entryCount; ++i)
-  {
-    const int index{history_base + i};
-    const char *line{entries[i]->line ? entries[i]->line : ""};
-    std::cout << std::setw(5) << index << "  " << line << "\n";
-  }
-
-  return 0;
-}
-
-void Shell::loadHistoryFromEnv()
-{
-  const char *historyFile{std::getenv("HISTFILE")};
-  if (!historyFile || *historyFile == '\0')
-    return;
-
-  loadHistoryFromFile(historyFile);
-}
-
-void Shell::saveHistoryToEnv()
-{
-  if (static_cast<int>(::getpid()) != mainPid)
-    return;
-
-  const char *historyFile{std::getenv("HISTFILE")};
-  if (!historyFile || *historyFile == '\0')
-    return;
-
-  const std::string normalizedPath{sanitizePath(std::string{historyFile}).string()};
-  if (write_history(normalizedPath.c_str()) == 0)
-    historyAppendedCount = history_length;
-}
-
-bool Shell::loadHistoryFromFile(const std::string &path)
-{
-  std::ifstream file{sanitizePath(path)};
-  if (!file.is_open())
-    return false;
-
-  std::string line{};
-  while (std::getline(file, line))
-  {
-    if (line.empty())
-      continue;
-    add_history(line.c_str());
-  }
-
-  historyAppendedCount = history_length;
-  return true;
-}
-
-std::filesystem::path Shell::sanitizePath(const std::string &path) const
-{
-  // Shell intentionally accepts user-provided paths; normalize to reduce traversal artifacts.
-  return std::filesystem::path{path}.lexically_normal();
-}
-
-std::optional<std::string> Shell::findExecutable(const std::string &name) const
-{
-  const char *pathEnv{std::getenv("PATH")};
-  if (!pathEnv || name.empty())
-    return std::nullopt;
-
-  const std::string pathValue{pathEnv};
-  std::string segment{};
-
-  auto checkSegment{[&](const std::string &dir) -> std::optional<std::string>
-                    {
-                      if (dir.empty())
-                        return std::nullopt;
-                      const std::filesystem::path candidate{sanitizePath(dir) / name};
-                      if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate) && isExecutable(candidate))
-                        return candidate.string();
-                      return std::nullopt;
-                    }};
-
-  for (char c : pathValue)
-  {
-    if (c == ':' || c == ';')
-    {
-      if (auto found{checkSegment(segment)}; found)
-        return found;
-      segment.clear();
-      continue;
-    }
-    segment.push_back(c);
-  }
-
-  if (auto found{checkSegment(segment)}; found)
-    return found;
-
-  return std::nullopt;
-}
-
-bool Shell::isExecutable(const std::filesystem::path &path) const
-{
-  std::error_code ec{};
-  const auto perms{std::filesystem::status(path, ec).permissions()};
-  if (ec)
-    return false;
-
-  using std::filesystem::perms;
-  const auto mask{perms::owner_exec | perms::group_exec | perms::others_exec};
-  return (perms::none != (perms & mask));
+  pathResolver.refresh();
+  return pathResolver.findExecutable(name);
 }
 
 std::optional<std::string> Shell::getEnvValue(const std::string &key) const
@@ -1121,9 +484,9 @@ std::optional<std::string> Shell::getCurrentDir() const
 
 void Shell::run()
 {
-  activeShell = this;
+  CompletionEngine::ActiveGuard completionGuard{completionEngine};
   rl_initialize();
-  rl_bind_key('\t', &Shell::handleTab);
+  rl_bind_key('\t', &CompletionEngine::handleTab);
 
   std::string buffer{};
   bool awaitingContinuation{false};
@@ -1141,7 +504,7 @@ void Shell::run()
         awaitingContinuation = false;
         continue;
       }
-      saveHistoryToEnv();
+      historyManager.saveToEnv();
       break;
     }
 
@@ -1151,7 +514,7 @@ void Shell::run()
       buffer.push_back('\n');
     buffer += line;
 
-    const auto parts{tokenize(buffer)};
+    const auto parts{tokenizer.tokenize(buffer)};
     if (!parts.empty() && parts.back() == "|")
     {
       awaitingContinuation = true;
@@ -1160,7 +523,7 @@ void Shell::run()
 
     awaitingContinuation = false;
     if (!buffer.empty())
-      add_history(buffer.c_str());
+      historyManager.addEntry(buffer);
     runCommand(parts);
     buffer.clear();
   }
