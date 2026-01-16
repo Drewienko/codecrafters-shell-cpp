@@ -1,34 +1,42 @@
 [![progress-banner](https://backend.codecrafters.io/progress/shell/2ce5f292-9134-477e-8d54-5660caffb35a)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
-This is a starting point for C++ solutions to the
-["Build Your Own Shell" Challenge](https://app.codecrafters.io/courses/shell/overview).
+# POSIX Shell Implementation
 
-In this challenge, you'll build your own POSIX compliant shell that's capable of
-interpreting shell commands, running external programs and builtin commands like
-cd, pwd, echo and more. Along the way, you'll learn about shell command parsing,
-REPLs, builtin commands, and more.
+A custom command-line interpreter written in **C++23**.
+This project implements core shell functionalities including process management, inter-process communication (pipelines), and a custom auto-completion engine.
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+Based on the ["Build Your Own Shell"](https://codecrafters.io/challenges/shell) challenge by CodeCrafters.
 
-# Passing the first stage
+![Shell Demo](docs/demo.gif)
 
-The entry point for your `shell` implementation is in `src/main.cpp`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
+## Features
 
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+* **Process Control:** Manual management of child processes using standard POSIX system calls (`fork`, `execvp`, `waitpid`).
+* **Pipelines:** Implementation of command chaining (`cmd1 | cmd2`) using `pipe()` and `dup2()` for file descriptor manipulation.
+* **Auto-Completion:** Custom **Trie data structure** to efficiently index and retrieve executables and file paths for tab-completion.
+
+## Tech Stack
+
+* **Language:** C++
+* **Platform:** Linux (Ubuntu/Debian/WSL)
+* **Build System:** CMake + Ninja
+* **Dependencies:**
+    * **GNU Readline:** For terminal input handling.
+
+
+
+Start the shell and run standard commands:
+
+##🚀 Build & Run
+```bash
+sudo apt update && sudo apt install build-essential cmake ninja-build libreadline-dev
+
+# 1. Configure
+cmake --preset linux-release
+
+# 2. Build
+cmake --build --preset release
+
+# 3. Run
+./build/release/shell
 ```
-
-Time to move on to the next stage!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cmake` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.cpp`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
